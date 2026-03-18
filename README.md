@@ -1,12 +1,14 @@
 This demo is a modification to the originl InforixSparkStreaming. The changes here were needed to allow for proper transaction processing. As such much of the original code is still in use. Below is the original text of the README file. To get started with this version read the setup_vii_demo.txt file.
 
 ### Changes in this version
+```
 -- Added transactional support
 -- Modifications to only publish to MQTT when a transaction is successfully completed
 -- Removed code that set the MQTT topic to the table name
 -- Added ability to set the MQTT topic upon index creation
 -- Added hostname, database name and table name to output
 -- Changed demo to work with stores_demo database
+```
 
 ### Original text
 # Informix Socket Streaming
