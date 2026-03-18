@@ -1009,6 +1009,19 @@ MI_CALLBACK_STATUS am_eot_cb (MI_EVENT_TYPE type, MI_CONNECTION *conn, void *ser
 */
          ENDXACT_PAYLOAD *current = NULL;
          ENDXACT_PAYLOAD *reverse = *endxact_payload;
+         ENDXACT_PAYLOAD *nextptr = NULL;
+      
+         while (reverse != NULL) {
+            nextptr = reverse->next;   // save next node
+            reverse->next = current;   // reverse pointer
+            current = reverse;         // move current forward
+            reverse = nextptr;         // move reverse forward
+         }
+
+/** vsalvador: NOT PROPERLY IMPLEMENTED
+ *
+         ENDXACT_PAYLOAD *current = NULL;
+         ENDXACT_PAYLOAD *reverse = *endxact_payload;
          while( reverse != NULL )
          {
             if ( current == NULL )
@@ -1022,7 +1035,9 @@ MI_CALLBACK_STATUS am_eot_cb (MI_EVENT_TYPE type, MI_CONNECTION *conn, void *ser
             }
             reverse = reverse->next;
          }
-
+ *
+ */
+      
          while( current != NULL )
          {
             ISSDEBUG(syslog( LOG_INFO, "Function %s: Payload found.\n"  , __FUNCTION__ );)
