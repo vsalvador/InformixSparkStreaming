@@ -784,7 +784,7 @@ mi_integer am_insert( MI_AM_TABLE_DESC *tableDesc, MI_ROW *row, MI_AM_ROWID_DESC
   rowToCSV( row , strchr( payload , 0 ) );
 
   ISSDEBUG(syslog( LOG_INFO, "Function %s: topic is %s.\n"  , __FUNCTION__ , mqtt->serverInfo->topic );)
-  *endxact_payload = xact_payload_add( *endxact_payload , xact_payload_new( payload , mqtt , mqtt->serverInfo->topic ) );
+  *endxact_payload = xact_payload_add( *endxact_payload , xact_payload_new( payload , mqtt , mqtt->serverInfo->topic ? mqtt->serverInfo->topic : tabName ) );
   ISSDEBUG(syslog( LOG_INFO, "Function %s: topic is %s.\n"  , __FUNCTION__ , mqtt->serverInfo->topic );)
 
   mi_unlock_memory( INDEX_LIST_MEMNAME , PER_SYSTEM );
@@ -868,7 +868,7 @@ mi_integer am_update( MI_AM_TABLE_DESC *tableDesc,
   strcat( payload , "," );
   rowToCSV( oldRow , strchr( payload , 0 ) );
 
-  *endxact_payload = xact_payload_add( *endxact_payload , xact_payload_new( payload , mqtt , mqtt->serverInfo->topic ) );
+  *endxact_payload = xact_payload_add( *endxact_payload , xact_payload_new( payload , mqtt , mqtt->serverInfo->topic ? mqtt->serverInfo->topic : tabName ) );
 
   mi_unlock_memory( INDEX_LIST_MEMNAME , PER_SYSTEM );
   return MI_OK;
@@ -935,7 +935,7 @@ mi_integer am_delete( MI_AM_TABLE_DESC *tableDesc, MI_ROW *row, MI_AM_ROWID_DESC
   strcat( payload , "," );
   rowToCSV( row , strchr( payload , 0 ) );
 
-  *endxact_payload = xact_payload_add( *endxact_payload , xact_payload_new( payload , mqtt , mqtt->serverInfo->topic ) );
+  *endxact_payload = xact_payload_add( *endxact_payload , xact_payload_new( payload , mqtt , mqtt->serverInfo->topic ? mqtt->serverInfo->topic : tabName ) );
 
   mi_unlock_memory( INDEX_LIST_MEMNAME , PER_SYSTEM );
   return MI_OK;
