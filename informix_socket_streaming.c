@@ -28,6 +28,7 @@
 #define INDEX_LIST_MEMNAME "ISSIndexList"
 #define PAYLOAD_LIST_MEMNAME "ISSPayloadList"
 #define MQTT_MAX_PACKET_ID 65535
+#define MAX_PAYLOAD_SIZE 32767
 
 mi_real *constantScanCost = NULL;
 
@@ -223,7 +224,7 @@ ISS_ServerInfo* getMQTTServerInfo( MI_AM_TABLE_DESC *tableDesc )
       if( strcmp( paramName , "host" ) == 0 )
       {
         int len = strlen( paramValue );
-        serverHost = (char*)mi_dalloc( len , PER_SYSTEM );
+        serverHost = (char*)mi_dalloc( len + 1 , PER_SYSTEM );
         memcpy( serverHost , paramValue , len );
         serverHost[ len ] = 0;
       }
@@ -681,6 +682,7 @@ mi_integer am_open( MI_AM_TABLE_DESC *tableDesc )
 
    if( indexList == NULL )
    {
+      ISSDEBUG(syslog( LOG_INFO, "Function %s: Searching indexList named memory.\n" , __FUNCTION__ );)
       int rc = mi_named_get( INDEX_LIST_MEMNAME, PER_SYSTEM, (void**)&indexList );
 
       if( rc == MI_ERROR )
@@ -690,6 +692,7 @@ mi_integer am_open( MI_AM_TABLE_DESC *tableDesc )
 
       if( rc == MI_NO_SUCH_NAME )
       {
+         ISSDEBUG(syslog( LOG_INFO, "Function %s: indexList named memory not found. Allocating new memory.\n" , __FUNCTION__ );)
          rc = mi_named_alloc( sizeof( ISS_LinkedList* ), INDEX_LIST_MEMNAME, PER_SYSTEM, (void**)&indexList );
          if( rc == MI_ERROR )
          {
@@ -702,7 +705,7 @@ mi_integer am_open( MI_AM_TABLE_DESC *tableDesc )
    if ( endxact_payload == NULL )
    {
       ISSDEBUG(syslog( LOG_INFO, "Function %s: Allocating memory for endxact_payload.\n" , __FUNCTION__ );)
-      int rc = mi_named_alloc( sizeof( ENDXACT_PAYLOAD* ), PAYLOAD_LIST_MEMNAME, PER_SYSTEM, (void**)&endxact_payload );
+      int rc = mi_named_alloc( sizeof( ENDXACT_PAYLOAD* ), PAYLOAD_LIST_MEMNAME, PER_TRANSACTION, (void**)&endxact_payload );
       if( rc == MI_ERROR )
       {
          ISSDEBUG(syslog( LOG_INFO, "Function %s: Error allocating endxact_payload.\n" , __FUNCTION__ );)
@@ -739,7 +742,7 @@ mi_integer am_insert( MI_AM_TABLE_DESC *tableDesc, MI_ROW *row, MI_AM_ROWID_DESC
 
   if( ( index = getIndex( tableDesc ) ) == NULL ||
       ( mqtt = getMQTTClient( index ) ) == NULL ||
-      ( payload = (char*)mi_dalloc( sizeof( char ) * 1024 , PER_TRANSACTION ) ) == NULL )
+      ( payload = (char*)mi_dalloc( sizeof( char ) * MAX_PAYLOAD_SIZE , PER_TRANSACTION ) ) == NULL )
   {
     mi_unlock_memory( INDEX_LIST_MEMNAME , PER_SYSTEM );
     return MI_OK;
@@ -765,7 +768,7 @@ mi_integer am_insert( MI_AM_TABLE_DESC *tableDesc, MI_ROW *row, MI_AM_ROWID_DESC
       return MI_ERROR;
   }
 
-  memset( payload , 0 , 1024 );
+  memset( payload , 0 , MAX_PAYLOAD_SIZE );
   strcat( payload , "i," );
 /*  mi_string *srvrName = mi_tab_server_name( tableDesc ); 
   strcat( payload , srvrName ); */
@@ -814,7 +817,7 @@ mi_integer am_update( MI_AM_TABLE_DESC *tableDesc,
   ISSDEBUG(syslog( LOG_INFO, "Function %s: Updating row of table...\n" , __FUNCTION__ );)
   if( ( index = getIndex( tableDesc ) ) == NULL ||
       ( mqtt = getMQTTClient( index ) ) == NULL ||
-      ( payload = (char*)mi_dalloc( sizeof( char ) * 1024 , PER_TRANSACTION ) ) == NULL )
+      ( payload = (char*)mi_dalloc( sizeof( char ) * MAX_PAYLOAD_SIZE , PER_TRANSACTION ) ) == NULL )
   {
     mi_unlock_memory( INDEX_LIST_MEMNAME , PER_SYSTEM );
     return MI_OK;
@@ -848,7 +851,7 @@ mi_integer am_update( MI_AM_TABLE_DESC *tableDesc,
   gethostname(hostname , HOST_NAME_MAX);
 
   strcat( payload , hostname );
-  memset( payload , 0 , 1024 );
+  memset( payload , 0 , MAX_PAYLOAD_SIZE );
   strcat( payload , "u," );
   /* strcat( payload , srvrName ); */
   strcat( payload , hostname );
@@ -893,7 +896,7 @@ mi_integer am_delete( MI_AM_TABLE_DESC *tableDesc, MI_ROW *row, MI_AM_ROWID_DESC
   ISSDEBUG(syslog( LOG_INFO, "Function %s: Deleting row from table...\n" , __FUNCTION__ );)
   if( ( index = getIndex( tableDesc ) ) == NULL ||
       ( mqtt = getMQTTClient( index ) ) == NULL ||
-      ( payload = (char*)mi_dalloc( sizeof( char ) * 1024 , PER_TRANSACTION ) ) == NULL )
+      ( payload = (char*)mi_dalloc( sizeof( char ) * MAX_PAYLOAD_SIZE , PER_TRANSACTION ) ) == NULL )
   {
     mi_unlock_memory( INDEX_LIST_MEMNAME , PER_SYSTEM );
     return MI_OK;
@@ -920,7 +923,7 @@ mi_integer am_delete( MI_AM_TABLE_DESC *tableDesc, MI_ROW *row, MI_AM_ROWID_DESC
   }
 
   mi_string *tabName = mi_tab_table_name( tableDesc );
-  memset( payload , 0 , 1024 );
+  memset( payload , 0 , MAX_PAYLOAD_SIZE );
   strcat( payload , "d," );
   /* mi_string *srvrName = mi_tab_server_name( tableDesc );
   strcat( payload , srvrName ); */
@@ -1018,41 +1021,23 @@ MI_CALLBACK_STATUS am_eot_cb (MI_EVENT_TYPE type, MI_CONNECTION *conn, void *ser
             reverse = nextptr;         // move reverse forward
          }
 
-/** vsalvador: NOT PROPERLY IMPLEMENTED
- *
-         ENDXACT_PAYLOAD *current = NULL;
-         ENDXACT_PAYLOAD *reverse = *endxact_payload;
-         while( reverse != NULL )
-         {
-            if ( current == NULL )
-            {
-                current=reverse;
-                current->next=NULL;
-            } 
-            else
-            {
-               current->next=reverse;
-            }
-            reverse = reverse->next;
-         }
- *
- */
-      
          while( current != NULL )
          {
             ISSDEBUG(syslog( LOG_INFO, "Function %s: Payload found.\n"  , __FUNCTION__ );)
             ISSDEBUG(syslog( LOG_INFO, "Function %s: Publish topic is %s.\n"  , __FUNCTION__ , current->topic );)
             ISSDEBUG(syslog( LOG_INFO, "Function %s: Publish payload is %s.\n"  , __FUNCTION__ , current->payload );)
             ISSDEBUG(syslog( LOG_INFO, "Function %s: nqtt->serverInfo->topic is %s.\n"  , __FUNCTION__ , current->mqtt->serverInfo->topic );)
-            publish.retain = 0;
-            publish.qos = 0;
-            publish.duplicate = 0;
-            publish.topic_name = current->topic;
-            publish.buffer = (byte*)current->payload;
-            publish.total_len = (word16)strlen( current->payload );
-            publish.packet_id = mqttGetNextPacketID();
-            MqttClient_Publish( current->mqtt->client, &publish );
-            ISSDEBUG(syslog( LOG_INFO, "Function %s: Published payload.\n"  , __FUNCTION__ );)
+            if (current->payload != NULL) {
+              publish.retain = 0;
+              publish.qos = 0;
+              publish.duplicate = 0;
+              publish.topic_name = current->topic;
+              publish.buffer = (byte*)current->payload;
+              publish.total_len = (word16)strlen( current->payload );
+              publish.packet_id = mqttGetNextPacketID();
+              MqttClient_Publish( current->mqtt->client, &publish );
+              ISSDEBUG(syslog( LOG_INFO, "Function %s: Published payload.\n"  , __FUNCTION__ );)
+            }
             current = current->next;
             ISSDEBUG(syslog( LOG_INFO, "Function %s: Checking for more payload.\n"  , __FUNCTION__ );)
          }
