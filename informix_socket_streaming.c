@@ -7,7 +7,6 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <string.h>
 #include <syslog.h>
 #include <unistd.h>
 #include <sys/types.h>
@@ -28,6 +27,16 @@
 #define INDEX_LIST_MEMNAME "ISSIndexList"
 #define PAYLOAD_LIST_MEMNAME "ISSPayloadList"
 #define MQTT_MAX_PACKET_ID 65535
+
+// Max index size depending of page size:
+//  2k Page Size: 380 bytes
+//  4k Page Size: 790 bytes
+//  8k Page Size: 1,609 bytes
+// 16k Page Size: 3,247 bytes
+// 32k Page Size: 6,520 bytes
+// 64k Page Size: 13,074 bytes
+//256k Page Size: 32,267 bytes
+
 #define MAX_PAYLOAD_SIZE 32767
 
 mi_real *constantScanCost = NULL;
@@ -66,6 +75,8 @@ typedef struct _endxact_payload {
 
 ISS_LinkedList **indexList = NULL;//, *mqttList = NULL;
 ENDXACT_PAYLOAD **endxact_payload = NULL;
+int *eot_cb_registered = NULL;
+
 int nextMQTTClientID = 0;
 
 int mqttLastPacketID = 0;
@@ -239,7 +250,7 @@ ISS_ServerInfo* getMQTTServerInfo( MI_AM_TABLE_DESC *tableDesc )
       else if( strcmp( paramName , "topic" ) == 0 )
       {
         int len = strlen( paramValue );
-        serverTopic = (char*)mi_dalloc( len , PER_SYSTEM );
+        serverTopic = (char*)mi_dalloc( len + 1 , PER_SYSTEM );
         memcpy( serverTopic , paramValue , len );
         serverTopic[ len ] = 0;
       }
@@ -249,7 +260,7 @@ ISS_ServerInfo* getMQTTServerInfo( MI_AM_TABLE_DESC *tableDesc )
         /* continue; */
       }
 
-      paramName = strtok( 0, AMPARAM_TOKEN_DELIMITERS );
+      paramName  = strtok( 0, AMPARAM_TOKEN_DELIMITERS );
       paramValue = strtok( 0, AMPARAM_TOKEN_DELIMITERS );
     }
 
@@ -374,6 +385,7 @@ mi_integer connectMQTTClient( ISS_MQTTSettings *mqttSettings )
         mi_free( rxBuffer );
         mi_free( mqttSettings->client );
         mqttSettings->client = NULL;
+        mi_free( net );
         return MI_ERROR;
       }
     }
@@ -440,7 +452,9 @@ ISS_Index* getIndex( MI_AM_TABLE_DESC *tableDesc )
     while( current != NULL )
     {
       index = (ISS_Index*)current->payload;
-      if( strcmp( index->serverInfo->host , serverInfo->host ) == 0 && index->serverInfo->port == serverInfo->port && strcmp( index->serverInfo->topic , serverInfo->topic ) == 0 )
+      if( strcmp( index->serverInfo->host , serverInfo->host ) == 0 && 
+          index->serverInfo->port == serverInfo->port && 
+          strcmp( index->serverInfo->topic ? index->serverInfo->topic : "" , serverInfo->topic ? serverInfo->topic : "" ) == 0 )
       {
         ISSDEBUG(syslog( LOG_INFO, "Function %s: index->serverInfo->topic is %s\n" , __FUNCTION__ , index->serverInfo->topic );)
         ISSDEBUG(syslog( LOG_INFO, "Function %s: serverInfo->topic is %s\n" , __FUNCTION__ , serverInfo->topic );)
@@ -567,12 +581,12 @@ void removeIndex( mi_string *indexName )
   mi_unlock_memory( INDEX_LIST_MEMNAME , PER_SYSTEM );
 }
 
-void columnValueToString( MI_ROW *row, mi_integer index, char *dest )
+mi_integer columnValueToString( MI_ROW *row, mi_integer index, char *dest, mi_integer remaining )
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
   ISSDEBUG(syslog( LOG_INFO, "Entering function %s\n" , __FUNCTION__ );)
 
-  MI_DATUM valueBuffer;
+  MI_DATUM   valueBuffer;
   mi_integer valueLen = 0;
   mi_string *stringValue;
 
@@ -587,40 +601,38 @@ void columnValueToString( MI_ROW *row, mi_integer index, char *dest )
       case SQLSMINT:
       case SQLINT:
       case SQLSERIAL:
-        sprintf( dest, "%d", *(mi_integer*)(&valueBuffer) );
+        snprintf( dest, remaining, "%d", *(mi_integer*)(&valueBuffer) );
         break;
       case SQLSMFLOAT:
-        sprintf( dest, "%.*f", FLT_DIG, *(mi_real*)valueBuffer );
+        snprintf( dest, remaining, "%.*f", FLT_DIG, *(mi_real*)valueBuffer );
         break;
       case SQLFLOAT:
-        sprintf( dest, "%.*f", DBL_DIG, *(mi_double_precision*)valueBuffer );
+        snprintf( dest, remaining, "%.*f", DBL_DIG, *(mi_double_precision*)valueBuffer );
         break;
       case SQLMONEY:
         stringValue = mi_money_to_string( (mi_money*)valueBuffer );
-        strcat( dest , stringValue );
+        strncat( dest, stringValue, remaining - 1 );
         mi_free( stringValue );
         break;
       case SQLDECIMAL:
         stringValue = mi_decimal_to_string( (mi_decimal*)valueBuffer );
-        strcat( dest , stringValue );
+        strncat( dest, stringValue, remaining - 1 );
         mi_free( stringValue );
         break;
       case SQLDATE:
         stringValue = mi_date_to_string( *(mi_date*)(&valueBuffer) );
-        strcat( dest , stringValue );
+        strncat( dest, stringValue, remaining - 1 );
         mi_free( stringValue );
         break;
       case SQLDTIME:
         stringValue = mi_datetime_to_string( (mi_datetime*)valueBuffer );
-        strcat( dest , stringValue );
+        strncat( dest, stringValue, remaining - 1 );
         mi_free( stringValue );
         break;
       case SQLCHAR:
       case SQLVCHAR:
         stringValue = mi_lvarchar_to_string( (mi_lvarchar*)valueBuffer );
-        strcat( dest , "\"" );
-        strcat( dest , stringValue );
-        strcat( dest , "\"" );
+        snprintf( dest, remaining, "\"%s\"", stringValue );
         mi_free( stringValue );
         break;
       default:
@@ -632,23 +644,29 @@ void columnValueToString( MI_ROW *row, mi_integer index, char *dest )
   {
     ISSDEBUG(syslog( LOG_INFO, "Function %s: Unknown value type\n" , __FUNCTION__ );)
   }
+
+  return (mi_integer)strlen( dest );
 }
 
-void rowToCSV( MI_ROW *row, char *dest )
+void rowToCSV( MI_ROW *row, char *dest, mi_integer remaining )
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
   ISSDEBUG(syslog( LOG_INFO, "Entering function %s\n" , __FUNCTION__ );)
 
-  char *offset = dest;
+  char    *offset = dest;
+  mi_integer left = remaining;
 
   mi_integer numCols = mi_column_count( (MI_ROW_DESC*)row );
   mi_integer i = 0;
   for( ; i < numCols; i++ )
   {
-    columnValueToString( row , i , offset );
+    mi_integer written = columnValueToString( row, i, offset, left );
+    left -= written;
+    if( left <= 2 ) break;  // no hay espacio ni para "," + \0
 
     if( i < numCols - 1 ) strcat( offset , "," );
     offset = strchr( offset , 0 );
+    left = remaining - (mi_integer)(offset - dest);
   }
 }
 
@@ -680,8 +698,8 @@ mi_integer am_open( MI_AM_TABLE_DESC *tableDesc )
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
   ISSDEBUG(syslog( LOG_INFO, "Begin %s:\n" , __FUNCTION__ );)
 
-   if( indexList == NULL )
-   {
+  if( indexList == NULL )
+  {
       ISSDEBUG(syslog( LOG_INFO, "Function %s: Searching indexList named memory.\n" , __FUNCTION__ );)
       int rc = mi_named_get( INDEX_LIST_MEMNAME, PER_SYSTEM, (void**)&indexList );
 
@@ -700,21 +718,36 @@ mi_integer am_open( MI_AM_TABLE_DESC *tableDesc )
          }
          *indexList = NULL;
       }
-   }
+  }
 
-   if ( endxact_payload == NULL )
-   {
-      ISSDEBUG(syslog( LOG_INFO, "Function %s: Allocating memory for endxact_payload.\n" , __FUNCTION__ );)
-      int rc = mi_named_alloc( sizeof( ENDXACT_PAYLOAD* ), PAYLOAD_LIST_MEMNAME, PER_TRANSACTION, (void**)&endxact_payload );
+  if( endxact_payload == NULL )
+  {
+      ISSDEBUG(syslog( LOG_INFO, "Function %s: Searching endxact_payload named memory.\n" , __FUNCTION__ );)
+      int rc = mi_named_get( PAYLOAD_LIST_MEMNAME, PER_TRANSACTION, (void**)&endxact_payload );
+
       if( rc == MI_ERROR )
       {
-         ISSDEBUG(syslog( LOG_INFO, "Function %s: Error allocating endxact_payload.\n" , __FUNCTION__ );)
+          ISSDEBUG(syslog(LOG_INFO, "Function %s: Error getting endxact_payload.\n", __FUNCTION__);)
       }
-      ISSDEBUG(syslog( LOG_INFO, "Function %s: Memory successfully allocated for endxact_payload.\n" , __FUNCTION__ );)
-      *endxact_payload = NULL;
-   }
 
-   return MI_OK;
+      if( rc == MI_NO_SUCH_NAME )
+      {
+          rc = mi_named_alloc( sizeof(ENDXACT_PAYLOAD*), PAYLOAD_LIST_MEMNAME, PER_TRANSACTION, (void**)&endxact_payload );
+          if( rc == MI_ERROR )
+          {
+              ISSDEBUG(syslog(LOG_INFO, "Function %s: Error allocating endxact_payload.\n", __FUNCTION__);)
+          }
+          *endxact_payload = NULL;   // only if new memory segment allocated
+      }
+  }
+
+  if ( eot_cb_registered == NULL )
+  {
+    mi_named_alloc( sizeof(int), "ISSEotCbFlag", PER_TRANSACTION, (void**)&eot_cb_registered );
+    *eot_cb_registered = 0;
+  }
+
+  return MI_OK;
 }
 
 mi_integer am_close( MI_AM_TABLE_DESC *tableDesc )
@@ -722,6 +755,9 @@ mi_integer am_close( MI_AM_TABLE_DESC *tableDesc )
   return MI_OK;
 }
 
+/**
+ *
+ **/
 mi_integer am_insert( MI_AM_TABLE_DESC *tableDesc, MI_ROW *row, MI_AM_ROWID_DESC *ridDesc )
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
@@ -748,52 +784,68 @@ mi_integer am_insert( MI_AM_TABLE_DESC *tableDesc, MI_ROW *row, MI_AM_ROWID_DESC
     return MI_OK;
   }
 
-  /* callback function prototype */
-  MI_CALLBACK_HANDLE      *cback=NULL;
-
-  ISSDEBUG(syslog( LOG_INFO, "Function %s: Registering callback routine.\n" , __FUNCTION__ );)
-
-  MI_CALLBACK_STATUS MI_PROC_CALLBACK am_eot_cb(MI_EVENT_TYPE type,MI_CONNECTION *conn,void *server_data,void *user_data);
-  /* Register the MI_EVENT_COMMIT_ABORT callback handler. */
-  cback = mi_register_callback (
-        NULL,                  /* register on NULL conn handle  */
-        MI_EVENT_COMMIT_ABORT, /* event = end of transaction    */
-        am_eot_cb,             /* function server will dispatch */
-        NULL,      /* user buffer */
-        NULL);                 /* not used */
-
-  if(cback == (MI_CALLBACK_HANDLE *) NULL)
+  if ( !(*eot_cb_registered) )
   {
-      mi_db_error_raise(NULL, MI_EXCEPTION, "AM_EOT_Reg: mi_register_callback failed!");
-      return MI_ERROR;
+    /* callback function prototype */
+    MI_CALLBACK_HANDLE      *cback=NULL;
+
+    ISSDEBUG(syslog( LOG_INFO, "Function %s: Registering callback routine.\n" , __FUNCTION__ );)
+
+    MI_CALLBACK_STATUS MI_PROC_CALLBACK am_eot_cb(MI_EVENT_TYPE type,MI_CONNECTION *conn,void *server_data,void *user_data);
+    /* Register the MI_EVENT_COMMIT_ABORT callback handler. */
+    cback = mi_register_callback (
+          NULL,                  /* register on NULL conn handle  */
+          MI_EVENT_COMMIT_ABORT, /* event = end of transaction    */
+          am_eot_cb,             /* function server will dispatch */
+          NULL,      /* user buffer */
+          NULL);                 /* not used */
+
+    if(cback == (MI_CALLBACK_HANDLE *) NULL)
+    {
+        mi_unlock_memory( INDEX_LIST_MEMNAME , PER_SYSTEM );
+
+        mi_db_error_raise(NULL, MI_EXCEPTION, "AM_EOT_Reg: mi_register_callback failed!");
+        return MI_ERROR;
+    }
+
+    *eot_cb_registered = 1;
   }
+
+  mi_char hostname[HOST_NAME_MAX];
+  gethostname(hostname , HOST_NAME_MAX);
+  mi_string *dbName = mi_tab_database_name( tableDesc );
+  mi_string *tabName = mi_tab_table_name( tableDesc );
 
   memset( payload , 0 , MAX_PAYLOAD_SIZE );
   strcat( payload , "i," );
 /*  mi_string *srvrName = mi_tab_server_name( tableDesc ); 
   strcat( payload , srvrName ); */
-  mi_char hostname[HOST_NAME_MAX];
-  gethostname(hostname , HOST_NAME_MAX);
   strcat( payload , hostname );
   strcat( payload , "," );
-
-  mi_string *dbName = mi_tab_database_name( tableDesc );
   strcat( payload , dbName );
   strcat( payload , "," );
-
-  mi_string *tabName = mi_tab_table_name( tableDesc );
   strcat( payload , tabName );
   strcat( payload , "," );
-  rowToCSV( row , strchr( payload , 0 ) );
+
+  char *csvStart = strchr( payload, 0 );
+  mi_integer remaining = MAX_PAYLOAD_SIZE - (mi_integer)(csvStart - payload) - 1;
+  rowToCSV( row, csvStart, remaining );
+
 
   ISSDEBUG(syslog( LOG_INFO, "Function %s: topic is %s.\n"  , __FUNCTION__ , mqtt->serverInfo->topic );)
   *endxact_payload = xact_payload_add( *endxact_payload , xact_payload_new( payload , mqtt , mqtt->serverInfo->topic ? mqtt->serverInfo->topic : tabName ) );
   ISSDEBUG(syslog( LOG_INFO, "Function %s: topic is %s.\n"  , __FUNCTION__ , mqtt->serverInfo->topic );)
 
+  mi_free(dbName);
+  mi_free(tabName);
+
   mi_unlock_memory( INDEX_LIST_MEMNAME , PER_SYSTEM );
   return MI_OK;
 }
 
+/**
+ *
+ **/
 mi_integer am_update( MI_AM_TABLE_DESC *tableDesc,
                       MI_ROW *oldRow,
                       MI_AM_ROWID_DESC *oldridDesc,
@@ -813,6 +865,8 @@ mi_integer am_update( MI_AM_TABLE_DESC *tableDesc,
   ISS_Index *index;
   ISS_MQTTSettings *mqtt;
   char *payload;
+  char *csvStart;
+  mi_integer remaining;
 
   ISSDEBUG(syslog( LOG_INFO, "Function %s: Updating row of table...\n" , __FUNCTION__ );)
   if( ( index = getIndex( tableDesc ) ) == NULL ||
@@ -823,24 +877,32 @@ mi_integer am_update( MI_AM_TABLE_DESC *tableDesc,
     return MI_OK;
   }
 
-  /* callback function prototype */
-  MI_CALLBACK_HANDLE      *cback=NULL;
-
-  ISSDEBUG(syslog( LOG_INFO, "Function %s: Registering callback routine.\n" , __FUNCTION__ );)
-
-  MI_CALLBACK_STATUS MI_PROC_CALLBACK am_eot_cb(MI_EVENT_TYPE type,MI_CONNECTION *conn,void *server_data,void *user_data);
-  /* Register the MI_EVENT_COMMIT_ABORT callback handler. */
-  cback = mi_register_callback (
-        NULL,                  /* register on NULL conn handle  */
-        MI_EVENT_COMMIT_ABORT, /* event = end of transaction    */
-        am_eot_cb,             /* function server will dispatch */
-        NULL,      /* user buffer */
-        NULL);                 /* not used */
-
-  if(cback == (MI_CALLBACK_HANDLE *) NULL)
+  if ( !(*eot_cb_registered) )
   {
-      mi_db_error_raise(NULL, MI_EXCEPTION, "AM_EOT_Reg: mi_register_callback failed!");
-      return MI_ERROR;
+
+    /* callback function prototype */
+    MI_CALLBACK_HANDLE      *cback=NULL;
+
+    ISSDEBUG(syslog( LOG_INFO, "Function %s: Registering callback routine.\n" , __FUNCTION__ );)
+
+    MI_CALLBACK_STATUS MI_PROC_CALLBACK am_eot_cb(MI_EVENT_TYPE type,MI_CONNECTION *conn,void *server_data,void *user_data);
+    /* Register the MI_EVENT_COMMIT_ABORT callback handler. */
+    cback = mi_register_callback (
+          NULL,                  /* register on NULL conn handle  */
+          MI_EVENT_COMMIT_ABORT, /* event = end of transaction    */
+          am_eot_cb,             /* function server will dispatch */
+          NULL,      /* user buffer */
+          NULL);                 /* not used */
+
+    if(cback == (MI_CALLBACK_HANDLE *) NULL)
+    {
+        mi_unlock_memory( INDEX_LIST_MEMNAME , PER_SYSTEM );
+
+        mi_db_error_raise(NULL, MI_EXCEPTION, "AM_EOT_Reg: mi_register_callback failed!");
+        return MI_ERROR;
+    }
+
+    *eot_cb_registered = 1;
   }
 
   mi_string *tabName = mi_tab_table_name( tableDesc );
@@ -850,7 +912,6 @@ mi_integer am_update( MI_AM_TABLE_DESC *tableDesc,
   mi_char hostname[HOST_NAME_MAX];
   gethostname(hostname , HOST_NAME_MAX);
 
-  strcat( payload , hostname );
   memset( payload , 0 , MAX_PAYLOAD_SIZE );
   strcat( payload , "u," );
   /* strcat( payload , srvrName ); */
@@ -860,7 +921,11 @@ mi_integer am_update( MI_AM_TABLE_DESC *tableDesc,
   strcat( payload , "," );
   strcat( payload , tabName );
   strcat( payload , "," );
-  rowToCSV( newRow , strchr( payload , 0 ) );
+
+  csvStart = strchr( payload, 0 );
+  remaining = MAX_PAYLOAD_SIZE - (mi_integer)(csvStart - payload) - 1;
+  rowToCSV( newRow, csvStart, remaining );
+
   strcat( payload , "\nu," );
   /* strcat( payload , srvrName ); */
   strcat( payload , hostname );
@@ -869,14 +934,23 @@ mi_integer am_update( MI_AM_TABLE_DESC *tableDesc,
   strcat( payload , "," );
   strcat( payload , tabName );
   strcat( payload , "," );
-  rowToCSV( oldRow , strchr( payload , 0 ) );
+
+  csvStart = strchr( payload, 0 );
+  remaining = MAX_PAYLOAD_SIZE - (mi_integer)(csvStart - payload) - 1;
+  rowToCSV( oldRow, csvStart, remaining );
 
   *endxact_payload = xact_payload_add( *endxact_payload , xact_payload_new( payload , mqtt , mqtt->serverInfo->topic ? mqtt->serverInfo->topic : tabName ) );
 
+  mi_free(dbName);
+  mi_free(tabName);
   mi_unlock_memory( INDEX_LIST_MEMNAME , PER_SYSTEM );
+
   return MI_OK;
 }
 
+/**
+ *
+ **/
 mi_integer am_delete( MI_AM_TABLE_DESC *tableDesc, MI_ROW *row, MI_AM_ROWID_DESC *ridDesc )
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
@@ -902,45 +976,60 @@ mi_integer am_delete( MI_AM_TABLE_DESC *tableDesc, MI_ROW *row, MI_AM_ROWID_DESC
     return MI_OK;
   }
 
-  /* callback function prototype */
-  MI_CALLBACK_HANDLE      *cback=NULL;
-
-  ISSDEBUG(syslog( LOG_INFO, "Function %s: Registering callback routine.\n" , __FUNCTION__ );)
-
-  MI_CALLBACK_STATUS MI_PROC_CALLBACK am_eot_cb(MI_EVENT_TYPE type,MI_CONNECTION *conn,void *server_data,void *user_data);
-  /* Register the MI_EVENT_COMMIT_ABORT callback handler. */
-  cback = mi_register_callback (
-        NULL,                  /* register on NULL conn handle  */
-        MI_EVENT_COMMIT_ABORT, /* event = end of transaction    */
-        am_eot_cb,             /* function server will dispatch */
-        NULL,      /* user buffer */
-        NULL);                 /* not used */
-
-  if(cback == (MI_CALLBACK_HANDLE *) NULL)
+  if ( !(*eot_cb_registered) )
   {
-      mi_db_error_raise(NULL, MI_EXCEPTION, "AM_EOT_Reg: mi_register_callback failed!");
-      return MI_ERROR;
+
+    /* callback function prototype */
+    MI_CALLBACK_HANDLE      *cback=NULL;
+
+    ISSDEBUG(syslog( LOG_INFO, "Function %s: Registering callback routine.\n" , __FUNCTION__ );)
+
+    MI_CALLBACK_STATUS MI_PROC_CALLBACK am_eot_cb(MI_EVENT_TYPE type,MI_CONNECTION *conn,void *server_data,void *user_data);
+    /* Register the MI_EVENT_COMMIT_ABORT callback handler. */
+    cback = mi_register_callback (
+          NULL,                  /* register on NULL conn handle  */
+          MI_EVENT_COMMIT_ABORT, /* event = end of transaction    */
+          am_eot_cb,             /* function server will dispatch */
+          NULL,      /* user buffer */
+          NULL);                 /* not used */
+
+    if(cback == (MI_CALLBACK_HANDLE *) NULL)
+    {
+        mi_unlock_memory( INDEX_LIST_MEMNAME , PER_SYSTEM );
+
+        mi_db_error_raise(NULL, MI_EXCEPTION, "AM_EOT_Reg: mi_register_callback failed!");
+        return MI_ERROR;
+    }
+    *eot_cb_registered = 1;
   }
 
+  mi_string *dbName  = mi_tab_database_name( tableDesc );
   mi_string *tabName = mi_tab_table_name( tableDesc );
+  mi_char hostname[HOST_NAME_MAX];
+  gethostname(hostname , HOST_NAME_MAX);
+
+
   memset( payload , 0 , MAX_PAYLOAD_SIZE );
   strcat( payload , "d," );
   /* mi_string *srvrName = mi_tab_server_name( tableDesc );
   strcat( payload , srvrName ); */
-  mi_char hostname[HOST_NAME_MAX];
-  gethostname(hostname , HOST_NAME_MAX);
   strcat( payload , hostname );
   strcat( payload , "," );
-  mi_string *dbName = mi_tab_database_name( tableDesc );
   strcat( payload , dbName );
   strcat( payload , "," );
   strcat( payload , tabName );
   strcat( payload , "," );
-  rowToCSV( row , strchr( payload , 0 ) );
+
+  char *csvStart = strchr( payload, 0 );
+  mi_integer remaining = MAX_PAYLOAD_SIZE - (mi_integer)(csvStart - payload) - 1;
+  rowToCSV( row, csvStart, remaining );
 
   *endxact_payload = xact_payload_add( *endxact_payload , xact_payload_new( payload , mqtt , mqtt->serverInfo->topic ? mqtt->serverInfo->topic : tabName ) );
 
+  mi_free(dbName);
+  mi_free(tabName);
   mi_unlock_memory( INDEX_LIST_MEMNAME , PER_SYSTEM );
+
   return MI_OK;
 }
 
@@ -975,6 +1064,9 @@ mi_integer am_truncate( MI_AM_TABLE_DESC *tableDesc )
   return MI_OK;
 }
 
+/**
+ *
+ **/
 MI_CALLBACK_STATUS am_eot_cb (MI_EVENT_TYPE type, MI_CONNECTION *conn, void *server_info, void *user_data)
 {
 
@@ -996,6 +1088,7 @@ MI_CALLBACK_STATUS am_eot_cb (MI_EVENT_TYPE type, MI_CONNECTION *conn, void *ser
     case MI_ABORT_END:
          ISSDEBUG(syslog( LOG_INFO, "Function %s: Transaction being rolledback.\n"  , __FUNCTION__ );)
          break;
+
     case MI_NORMAL_END:
          ISSDEBUG(syslog( LOG_INFO,"Function %s: Transaction complete.\n" , __FUNCTION__ );)
          if( endxact_payload == NULL ) return MI_CB_CONTINUE;
@@ -1048,6 +1141,8 @@ MI_CALLBACK_STATUS am_eot_cb (MI_EVENT_TYPE type, MI_CONNECTION *conn, void *ser
     }
 
     *endxact_payload = NULL;
+    *eot_cb_registered = 0;
+
     ISSDEBUG(syslog( LOG_INFO, "Function %s: Exiting routine.\n"  , __FUNCTION__ );)
     return MI_CB_CONTINUE;
 }
