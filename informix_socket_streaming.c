@@ -213,6 +213,8 @@ mi_integer getTableName( mi_string *indexName, char *dest )
   strcat( dest , tableName );
   mi_free( tableName );
 
+  mi_close(conn);
+
   return MI_OK;
 }
 
