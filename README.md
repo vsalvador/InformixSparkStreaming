@@ -3,11 +3,11 @@ This demo is a modification to the originl InforixSparkStreaming. The changes he
 ### Changes in this version
 * Added transactional support Modifications to only publish to MQTT when a transaction is successfully completed
 * Removed code that set the MQTT topic to the table name
-* Readded ability to fallback to set MQTT tiouc ti the table name if no topic parameter is defined upon index creation
 * Added ability to set the MQTT topic upon index creation
 * Added ability to set the MQTT QoS upon index creation
 * Added hostname, database name and table name to output
 * Changed demo to work with stores_demo database
+* Changed examples to include new required topic parameter
 * Fixed lots of memory leaking issues
 
 ### Original text

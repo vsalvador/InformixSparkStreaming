@@ -26,6 +26,7 @@
 #define AMPARAM_TOKEN_DELIMITERS " =,"
 #define INDEX_LIST_MEMNAME "ISSIndexList"
 #define PAYLOAD_LIST_MEMNAME "ISSPayloadList"
+#define EOT_CB_FLAG_MEMNAME "ISSEotCbFlag"
 #define MQTT_MAX_PACKET_ID 65535
 
 // Max index size depending of page size:
@@ -83,16 +84,15 @@ int nextMQTTClientID = 0;
 int mqttLastPacketID = 0;
 
 
-ENDXACT_PAYLOAD* xact_payload_new( char *payload , ISS_MQTTSettings *mqtt, char *topic, char *fallbackTopic)
+ENDXACT_PAYLOAD* xact_payload_new( char *payload , ISS_MQTTSettings *mqtt, char *topic)
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
   ISSDEBUG(syslog( LOG_INFO, "Function %s: payload is %s\n" , __FUNCTION__ , payload);)
 
-  mi_string *srcTopic = topic ? topic : fallbackTopic;
-  mi_integer topicLen = strlen( srcTopic );
+  mi_integer topicLen = strlen( topic );
   char *ownedTopic = (char*)mi_dalloc( topicLen + 1, PER_TRANSACTION );
 
-  memcpy( ownedTopic, srcTopic, topicLen );
+  memcpy( ownedTopic, topic, topicLen );
   ownedTopic[ topicLen ] = 0;
 
   ENDXACT_PAYLOAD *newxact = (ENDXACT_PAYLOAD*)mi_dalloc( sizeof(ENDXACT_PAYLOAD) , PER_TRANSACTION );
@@ -100,7 +100,7 @@ ENDXACT_PAYLOAD* xact_payload_new( char *payload , ISS_MQTTSettings *mqtt, char 
   newxact->topic = ownedTopic;
   newxact->payload = payload;
   newxact->next  = NULL;
-  ISSDEBUG(syslog( LOG_INFO, "Function %s: newxact->payload is %s\n" , __FUNCTION__ , newxact->payload);)
+  ISSDEBUG(syslog( LOG_INFO, "Function %s: newxact topic:%s payload:%s\n" , __FUNCTION__ , newxact->topic, newxact->payload);)
 
   return newxact;
 }
@@ -285,18 +285,22 @@ ISS_ServerInfo* getMQTTServerInfo( MI_AM_TABLE_DESC *tableDesc )
       paramValue = strtok( 0, AMPARAM_TOKEN_DELIMITERS );
     }
 
-    if( serverHost && serverPort > 0 )
+    if( serverTopic && serverHost && serverPort > 0 )
     {
       info = (ISS_ServerInfo*)mi_dalloc( sizeof( ISS_ServerInfo ) , PER_SYSTEM );
-      info->host = serverHost;
-      info->port = serverPort;
-      info->qos  = serverQoS;
-      info->refCount = 0;
+      info->host  = serverHost;
+      info->port  = serverPort;
+      info->qos   = serverQoS;
       info->topic = serverTopic;
+      info->refCount = 0;
 
-      ISSDEBUG(syslog( LOG_INFO, "Function %s: MQTT Server Info: %s:%d Topic=%s\n" , __FUNCTION__ , info->host, info->port, info->topic );)
+      ISSDEBUG(syslog( LOG_INFO, "Function %s: MQTT Server Info: %s:%d Topic=%s QoS:%d\n" , __FUNCTION__ , info->host, info->port, info->topic, info->qos );)
     }
-    else if( serverHost ) mi_free( serverHost );
+    else
+    {
+      if( serverHost )  mi_free( serverHost );
+      if( serverTopic ) mi_free( serverTopic );
+    }
   }
   else
   {
@@ -714,6 +718,7 @@ mi_integer am_drop( MI_AM_TABLE_DESC *tableDesc )
   mi_string *indexName = mi_tab_name( tableDesc );
 
   removeIndex( indexName );
+
   ISSDEBUG(syslog( LOG_INFO, "Function %s: Index dropped: %s\n" , __FUNCTION__ , indexName );)
 
   mi_free(indexName);
@@ -775,10 +780,10 @@ mi_integer am_open( MI_AM_TABLE_DESC *tableDesc )
 
   if ( eot_cb_registered == NULL )
   {
-    int rc = mi_named_get( "ISSEotCbFlag", PER_TRANSACTION, (void**)&eot_cb_registered );
+    int rc = mi_named_get( EOT_CB_FLAG_MEMNAME, PER_TRANSACTION, (void**)&eot_cb_registered );
     if( rc == MI_NO_SUCH_NAME )
     {
-        mi_named_alloc( sizeof(int), "ISSEotCbFlag", PER_TRANSACTION, (void**)&eot_cb_registered );
+        mi_named_alloc( sizeof(int), EOT_CB_FLAG_MEMNAME, PER_TRANSACTION, (void**)&eot_cb_registered );
         if( rc == MI_OK ) {
             *eot_cb_registered = 0;
         }
@@ -871,8 +876,7 @@ mi_integer am_insert( MI_AM_TABLE_DESC *tableDesc, MI_ROW *row, MI_AM_ROWID_DESC
 
 
   ISSDEBUG(syslog( LOG_INFO, "Function %s: topic is %s.\n"  , __FUNCTION__ , mqtt->serverInfo->topic );)
-  *endxact_payload = xact_payload_add( *endxact_payload , xact_payload_new( payload , mqtt , mqtt->serverInfo->topic, tabName ) );
-  ISSDEBUG(syslog( LOG_INFO, "Function %s: topic is %s.\n"  , __FUNCTION__ , mqtt->serverInfo->topic );)
+  *endxact_payload = xact_payload_add( *endxact_payload , xact_payload_new( payload , mqtt , mqtt->serverInfo->topic ) );
 
   mi_free(dbName);
   mi_free(tabName);
@@ -977,7 +981,7 @@ mi_integer am_update( MI_AM_TABLE_DESC *tableDesc,
   remaining = MAX_PAYLOAD_SIZE - (mi_integer)(csvStart - payload) - 1;
   rowToCSV( oldRow, csvStart, remaining );
 
-  *endxact_payload = xact_payload_add( *endxact_payload , xact_payload_new( payload , mqtt , mqtt->serverInfo->topic, tabName ) );
+  *endxact_payload = xact_payload_add( *endxact_payload , xact_payload_new( payload , mqtt , mqtt->serverInfo->topic ) );
 
   mi_free(dbName);
   mi_free(tabName);
@@ -1064,7 +1068,7 @@ mi_integer am_delete( MI_AM_TABLE_DESC *tableDesc, MI_ROW *row, MI_AM_ROWID_DESC
   mi_integer remaining = MAX_PAYLOAD_SIZE - (mi_integer)(csvStart - payload) - 1;
   rowToCSV( row, csvStart, remaining );
 
-  *endxact_payload = xact_payload_add( *endxact_payload , xact_payload_new( payload , mqtt , mqtt->serverInfo->topic , tabName ) );
+  *endxact_payload = xact_payload_add( *endxact_payload , xact_payload_new( payload , mqtt , mqtt->serverInfo->topic ) );
 
   mi_free(dbName);
   mi_free(tabName);
@@ -1158,7 +1162,6 @@ MI_CALLBACK_STATUS am_eot_cb (MI_EVENT_TYPE type, MI_CONNECTION *conn, void *ser
          {
             ISSDEBUG(syslog( LOG_INFO, "Function %s: Payload found.\n"  , __FUNCTION__ );)
             ISSDEBUG(syslog( LOG_INFO, "Function %s: Publish topic is %s.\n"  , __FUNCTION__ , current->topic );)
-            ISSDEBUG(syslog( LOG_INFO, "Function %s: nqtt->serverInfo->topic is %s.\n"  , __FUNCTION__ , current->mqtt->serverInfo->topic );)
 
             size_t payload_length = current->payload ? strnlen( current->payload, (size_t)MAX_PAYLOAD_SIZE) : 0;
             if (payload_length > 0 && payload_length < MAX_PAYLOAD_SIZE)
