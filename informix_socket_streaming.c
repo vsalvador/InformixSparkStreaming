@@ -110,6 +110,10 @@ ENDXACT_PAYLOAD* xact_payload_add( ENDXACT_PAYLOAD *list, ENDXACT_PAYLOAD *link 
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
   ISSDEBUG(syslog( LOG_INFO, "Begin %s:\n" , __FUNCTION__ );)
+
+  link->next = list;  // NULL si list es NULL, nodo anterior si no
+
+/*
    if( list == NULL )
    {
       list = link;
@@ -120,6 +124,7 @@ ENDXACT_PAYLOAD* xact_payload_add( ENDXACT_PAYLOAD *list, ENDXACT_PAYLOAD *link 
       link->next = list;
    }
    ISSDEBUG(syslog( LOG_INFO, "Function %s: list->payload is %s\n" , __FUNCTION__ , list->payload);)
+*/
    ISSDEBUG(syslog( LOG_INFO, "Function %s: link->payload is %s\n" , __FUNCTION__ , link->payload);)
 
    return link;
@@ -165,6 +170,7 @@ ISS_LinkedList* ISS_LinkedList_add( ISS_LinkedList *list, ISS_LinkedList *link )
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
   ISSDEBUG(syslog( LOG_INFO, "Entering function %s\n" , __FUNCTION__ );)
 
+  /*
   if( list == NULL )
   {
     list = link;
@@ -174,6 +180,9 @@ ISS_LinkedList* ISS_LinkedList_add( ISS_LinkedList *list, ISS_LinkedList *link )
   {
     link->next = list;
   }
+  */
+
+  link->next = list;
 
   return link;
 }
@@ -196,18 +205,35 @@ mi_integer getTableName( mi_string *indexName, char *dest )
 
   MI_CONNECTION *conn = mi_open( NULL, NULL, NULL );
   if( !conn ) return MI_ERROR;
+
   mi_string queryString[256];
   sprintf( queryString , "select tabname from sysindices join systables on sysindices.tabid = systables.tabid where sysindices.idxname = '%s'" , indexName );
-  if( mi_exec( conn , queryString , MI_QUERY_BINARY ) == MI_ERROR ) return MI_ERROR;
-  if( mi_get_result( conn ) != MI_ROWS ) return MI_ERROR;
+  if( mi_exec( conn , queryString , MI_QUERY_BINARY ) == MI_ERROR ) 
+  {
+    mi_close(conn);
+    return MI_ERROR;
+  }
+  if( mi_get_result( conn ) != MI_ROWS )
+  {
+    mi_close(conn);
+    return MI_ERROR;
+  }
 
   mi_integer error = 0;
   MI_ROW *row = mi_next_row( conn , &error );
-  if( !row ) return MI_ERROR;
+  if( !row )
+  {
+    mi_close(conn);
+    return MI_ERROR;
+  }
 
   MI_DATUM valueBuffer = 0;
   mi_integer valueLen = 0;
-  if( mi_value( row , 0 , &valueBuffer , &valueLen ) != MI_NORMAL_VALUE ) return MI_ERROR;
+  if( mi_value( row , 0 , &valueBuffer , &valueLen ) != MI_NORMAL_VALUE )
+  {
+    mi_close(conn);
+    return MI_ERROR;
+  }
 
   mi_string *tableName = mi_lvarchar_to_string( (mi_lvarchar*)valueBuffer );
   strcat( dest , tableName );
@@ -783,7 +809,7 @@ mi_integer am_open( MI_AM_TABLE_DESC *tableDesc )
     int rc = mi_named_get( EOT_CB_FLAG_MEMNAME, PER_TRANSACTION, (void**)&eot_cb_registered );
     if( rc == MI_NO_SUCH_NAME )
     {
-        mi_named_alloc( sizeof(int), EOT_CB_FLAG_MEMNAME, PER_TRANSACTION, (void**)&eot_cb_registered );
+        rc = mi_named_alloc( sizeof(int), EOT_CB_FLAG_MEMNAME, PER_TRANSACTION, (void**)&eot_cb_registered );
         if( rc == MI_OK ) {
             *eot_cb_registered = 0;
         }
