@@ -83,7 +83,6 @@ int nextMQTTClientID = 0;
 
 int mqttLastPacketID = 0;
 
-
 ENDXACT_PAYLOAD* xact_payload_new( char *payload , ISS_MQTTSettings *mqtt, char *topic)
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
@@ -135,8 +134,12 @@ word16 mqttGetNextPacketID()
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
   ISSDEBUG(syslog( LOG_INFO, "Entering function %s\n" , __FUNCTION__ );)
 
-  mqttLastPacketID = ( mqttLastPacketID >= MQTT_MAX_PACKET_ID ) ? 1 : mqttLastPacketID + 1;
-  return mqttLastPacketID;
+  mi_lock_memory( "ISSLastPacketID", PER_SYSTEM );
+  *lastPacketID = ( *lastPacketID >= MQTT_MAX_PACKET_ID ) ? 1 : *lastPacketID + 1;
+  word16 id = (word16)*lastPacketID;
+  mi_unlock_memory( "ISSLastPacketID", PER_SYSTEM );
+
+  return id;
 }
 
 ISS_LinkedList* ISS_LinkedList_remove( ISS_LinkedList *list, ISS_LinkedList *link )
@@ -814,6 +817,13 @@ mi_integer am_open( MI_AM_TABLE_DESC *tableDesc )
             *eot_cb_registered = 0;
         }
     }
+  }
+
+  int *lastPacketID = NULL;
+  rc = mi_named_get( "ISSLastPacketID", PER_SYSTEM, (void**)&lastPacketID );
+  if( rc == MI_NO_SUCH_NAME ) {
+    rc = mi_named_alloc( sizeof(int), "ISSLastPacketID", PER_SYSTEM, (void**)&lastPacketID );
+    if( rc == MI_OK ) *lastPacketID = 0;
   }
 
   return MI_OK;
