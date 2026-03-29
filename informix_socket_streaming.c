@@ -725,6 +725,29 @@ void rowToCSV( MI_ROW *row, char *dest, mi_integer remaining )
   }
 }
 
+static mi_integer ensureEotCallbackRegistered()
+{
+    if( *eot_cb_registered ) return MI_OK;
+
+    MI_CALLBACK_STATUS MI_PROC_CALLBACK am_eot_cb(MI_EVENT_TYPE, MI_CONNECTION*, void*, void*);
+
+    MI_CALLBACK_HANDLE *cback = mi_register_callback(
+          NULL,
+          MI_EVENT_COMMIT_ABORT,
+          am_eot_cb,
+          NULL,
+          NULL);
+
+    if( cback == NULL )
+    {
+        mi_db_error_raise(NULL, MI_EXCEPTION, "AM_EOT_Reg: mi_register_callback failed!");
+        return MI_ERROR;
+    }
+
+    *eot_cb_registered = 1;
+    return MI_OK;
+}
+
 mi_integer am_create( MI_AM_TABLE_DESC *tableDesc )
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
@@ -863,31 +886,10 @@ mi_integer am_insert( MI_AM_TABLE_DESC *tableDesc, MI_ROW *row, MI_AM_ROWID_DESC
     return MI_OK;
   }
 
-  if ( !(*eot_cb_registered) )
+  if( ensureEotCallbackRegistered() != MI_OK )
   {
-    /* callback function prototype */
-    MI_CALLBACK_HANDLE      *cback=NULL;
-
-    ISSDEBUG(syslog( LOG_INFO, "Function %s: Registering callback routine.\n" , __FUNCTION__ );)
-
-    MI_CALLBACK_STATUS MI_PROC_CALLBACK am_eot_cb(MI_EVENT_TYPE type,MI_CONNECTION *conn,void *server_data,void *user_data);
-    /* Register the MI_EVENT_COMMIT_ABORT callback handler. */
-    cback = mi_register_callback (
-          NULL,                  /* register on NULL conn handle  */
-          MI_EVENT_COMMIT_ABORT, /* event = end of transaction    */
-          am_eot_cb,             /* function server will dispatch */
-          NULL,      /* user buffer */
-          NULL);                 /* not used */
-
-    if(cback == (MI_CALLBACK_HANDLE *) NULL)
-    {
-        mi_unlock_memory( INDEX_LIST_MEMNAME , PER_SYSTEM );
-
-        mi_db_error_raise(NULL, MI_EXCEPTION, "AM_EOT_Reg: mi_register_callback failed!");
-        return MI_ERROR;
-    }
-
-    *eot_cb_registered = 1;
+    mi_unlock_memory( INDEX_LIST_MEMNAME, PER_SYSTEM );
+    return MI_ERROR;
   }
 
   mi_char hostname[HOST_NAME_MAX];
@@ -957,32 +959,10 @@ mi_integer am_update( MI_AM_TABLE_DESC *tableDesc,
     return MI_OK;
   }
 
-  if ( !(*eot_cb_registered) )
+  if( ensureEotCallbackRegistered() != MI_OK )
   {
-
-    /* callback function prototype */
-    MI_CALLBACK_HANDLE      *cback=NULL;
-
-    ISSDEBUG(syslog( LOG_INFO, "Function %s: Registering callback routine.\n" , __FUNCTION__ );)
-
-    MI_CALLBACK_STATUS MI_PROC_CALLBACK am_eot_cb(MI_EVENT_TYPE type,MI_CONNECTION *conn,void *server_data,void *user_data);
-    /* Register the MI_EVENT_COMMIT_ABORT callback handler. */
-    cback = mi_register_callback (
-          NULL,                  /* register on NULL conn handle  */
-          MI_EVENT_COMMIT_ABORT, /* event = end of transaction    */
-          am_eot_cb,             /* function server will dispatch */
-          NULL,      /* user buffer */
-          NULL);                 /* not used */
-
-    if(cback == (MI_CALLBACK_HANDLE *) NULL)
-    {
-        mi_unlock_memory( INDEX_LIST_MEMNAME , PER_SYSTEM );
-
-        mi_db_error_raise(NULL, MI_EXCEPTION, "AM_EOT_Reg: mi_register_callback failed!");
-        return MI_ERROR;
-    }
-
-    *eot_cb_registered = 1;
+    mi_unlock_memory( INDEX_LIST_MEMNAME, PER_SYSTEM );
+    return MI_ERROR;
   }
 
   mi_string *dbName  = mi_tab_database_name( tableDesc );
@@ -1056,31 +1036,10 @@ mi_integer am_delete( MI_AM_TABLE_DESC *tableDesc, MI_ROW *row, MI_AM_ROWID_DESC
     return MI_OK;
   }
 
-  if ( !(*eot_cb_registered) )
+  if( ensureEotCallbackRegistered() != MI_OK )
   {
-
-    /* callback function prototype */
-    MI_CALLBACK_HANDLE      *cback=NULL;
-
-    ISSDEBUG(syslog( LOG_INFO, "Function %s: Registering callback routine.\n" , __FUNCTION__ );)
-
-    MI_CALLBACK_STATUS MI_PROC_CALLBACK am_eot_cb(MI_EVENT_TYPE type,MI_CONNECTION *conn,void *server_data,void *user_data);
-    /* Register the MI_EVENT_COMMIT_ABORT callback handler. */
-    cback = mi_register_callback (
-          NULL,                  /* register on NULL conn handle  */
-          MI_EVENT_COMMIT_ABORT, /* event = end of transaction    */
-          am_eot_cb,             /* function server will dispatch */
-          NULL,      /* user buffer */
-          NULL);                 /* not used */
-
-    if(cback == (MI_CALLBACK_HANDLE *) NULL)
-    {
-        mi_unlock_memory( INDEX_LIST_MEMNAME , PER_SYSTEM );
-
-        mi_db_error_raise(NULL, MI_EXCEPTION, "AM_EOT_Reg: mi_register_callback failed!");
-        return MI_ERROR;
-    }
-    *eot_cb_registered = 1;
+    mi_unlock_memory( INDEX_LIST_MEMNAME, PER_SYSTEM );
+    return MI_ERROR;
   }
 
   mi_string *dbName  = mi_tab_database_name( tableDesc );
