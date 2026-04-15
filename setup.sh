@@ -165,8 +165,8 @@ echo -e "--------------------------------------";
 echo -e "Building UDR..."
 echo -e "--------------------------------------\n";
 
-#gcc -Wall -fPIC -DWITH_ISS_DEBUG -DMI_SERVBUILD -I$LIB_DIR/include -I$INFORMIXDIR/incl/public -I$INFORMIXDIR/incl -c *.c
-gcc -Wall -fPIC                  -DMI_SERVBUILD -I$LIB_DIR/include -I$INFORMIXDIR/incl/public -I$INFORMIXDIR/incl -c *.c
+gcc -Wall -fPIC -DWITH_ISS_DEBUG -DMI_SERVBUILD -I$LIB_DIR/include -I$INFORMIXDIR/incl/public -I$INFORMIXDIR/incl -c *.c
+#gcc -Wall -fPIC                  -DMI_SERVBUILD -I$LIB_DIR/include -I$INFORMIXDIR/incl/public -I$INFORMIXDIR/incl -c *.c
 if_cmd_failed
 gcc -Wl,-rpath=$LIB_DIR/lib,-L$LIB_DIR/lib -lwolfssl -lwolfmqtt *.o -shared -o informix_socket_streaming.so
 if_cmd_failed

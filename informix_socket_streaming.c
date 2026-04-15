@@ -692,11 +692,19 @@ mi_integer columnValueToString( MI_ROW *row, mi_integer index, char *dest, mi_in
         snprintf( dest, remaining, "\"%s\"", stringValue );
         mi_free( stringValue );
         break;
-      case SQLBOOL:
-        mi_boolean bool_val = *(mi_boolean*)(&valueBuffer);
+      case SQLUDTFIXED:
+        MI_TYPE_DESC *columnTypeDesc = mi_column_typedesc( (MI_ROW_DESC*)row , index);
+        mi_string *typeName = mi_type_full_name(columnTypeDesc);
 
-        strncat( dest, (bool_val == '\01' ? "t" : "f") , remaining - 1 );
+        if (strcmp(typeName, "informix.boolean") == 0) {
+          mi_boolean bool_val = *(mi_boolean*)(&valueBuffer);
+          strncat( dest, (bool_val == '\01' ? "true" : "false") , remaining - 1 );
+        } else {
+          ISSDEBUG(syslog( LOG_INFO, "Function %s: Unknown column type ID: %d (%s)\n" , __FUNCTION__ , columnTypeID, typeName);)
+        }
+        mi_free( typeName );
         break;
+
       default:
         ISSDEBUG(syslog( LOG_INFO, "Function %s: Unknown column type ID: %d\n" , __FUNCTION__ , columnTypeID & TYPEIDMASK );)
         break;
