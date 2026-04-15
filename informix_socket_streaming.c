@@ -81,7 +81,7 @@ int *eot_cb_registered = NULL;
 
 int nextMQTTClientID = 0;
 
-int mqttLastPacketID = 0;
+int *lastPacketID = NULL;
 
 ENDXACT_PAYLOAD* xact_payload_new( char *payload , ISS_MQTTSettings *mqtt, char *topic)
 {
@@ -686,9 +686,16 @@ mi_integer columnValueToString( MI_ROW *row, mi_integer index, char *dest, mi_in
         break;
       case SQLCHAR:
       case SQLVCHAR:
+      case SQLNCHAR:
+      case SQLNVCHAR:
         stringValue = mi_lvarchar_to_string( (mi_lvarchar*)valueBuffer );
         snprintf( dest, remaining, "\"%s\"", stringValue );
         mi_free( stringValue );
+        break;
+      case SQLBOOL:
+        mi_boolean bool_val = *(mi_boolean*)(&valueBuffer);
+
+        strncat( dest, (bool_val == '\01' ? "t" : "f") , remaining - 1 );
         break;
       default:
         ISSDEBUG(syslog( LOG_INFO, "Function %s: Unknown column type ID: %d\n" , __FUNCTION__ , columnTypeID & TYPEIDMASK );)
@@ -842,11 +849,12 @@ mi_integer am_open( MI_AM_TABLE_DESC *tableDesc )
     }
   }
 
-  int *lastPacketID = NULL;
-  rc = mi_named_get( "ISSLastPacketID", PER_SYSTEM, (void**)&lastPacketID );
-  if( rc == MI_NO_SUCH_NAME ) {
-    rc = mi_named_alloc( sizeof(int), "ISSLastPacketID", PER_SYSTEM, (void**)&lastPacketID );
-    if( rc == MI_OK ) *lastPacketID = 0;
+  if ( lastPacketID == NULL ) {
+    int rc = mi_named_get( "ISSLastPacketID", PER_SYSTEM, (void**)&lastPacketID );
+    if( rc == MI_NO_SUCH_NAME ) {
+      rc = mi_named_alloc( sizeof(int), "ISSLastPacketID", PER_SYSTEM, (void**)&lastPacketID );
+      if( rc == MI_OK ) *lastPacketID = 0;
+    }
   }
 
   return MI_OK;
