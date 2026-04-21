@@ -9,7 +9,7 @@ This demo is a modification to the originl InforixSparkStreaming. The changes he
 * Changed demo to work with stores_demo database
 * Changed examples to include new required topic parameter
 * Fixed lots of memory leaking issues
-* Add support for BOOLEAN, NCHAR and NVARCHAR SQL types
+* Add support for BOOLEAN, SERIAL8, INT8, NCHAR and NVARCHAR SQL types
 
 ### Original text
 # Informix Socket Streaming
@@ -47,10 +47,11 @@ The following column data types are currently supported:
 * NCHAR
 * VARCHAR
 * NVARCHAR
-* SMALLINT, INTEGER
+* SMALLINT, INTEGER, INTEGER8
 * SMALLFLOAT, FLOAT
 * DECIMAL
 * SERIAL
+* SERIAL8
 * MONEY
 * DATE ... DATETIME YEAR TO FRACTION(5)
 * BOOLEAN
