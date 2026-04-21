@@ -639,7 +639,7 @@ void removeIndex( mi_string *indexName )
 mi_integer columnValueToString( MI_ROW *row, mi_integer index, char *dest, mi_integer remaining )
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
-  ISSDEBUG(syslog( LOG_INFO, "Entering function %s\n" , __FUNCTION__ );)
+  ISSDEBUG(syslog( LOG_INFO, "Entering function %s index %d\n" , __FUNCTION__, index );)
 
   MI_DATUM   valueBuffer;
   mi_integer valueLen = 0;
@@ -657,6 +657,25 @@ mi_integer columnValueToString( MI_ROW *row, mi_integer index, char *dest, mi_in
       case SQLINT:
       case SQLSERIAL:
         snprintf( dest, remaining, "%d", *(mi_integer*)(&valueBuffer) );
+        break;
+      case SQLINT8:
+      case SQLSERIAL8:
+        char buffer[30];                          // Buffer to hold the string
+        char *clean_buffer = (char *)mi_alloc(30); // Buffer to tream the string
+
+        if (buffer != NULL && clean_buffer != NULL) {
+          mint ret = ifx_int8toasc((mi_int8 *)valueBuffer, buffer, sizeof(buffer)-1);
+          if (ret == 0) {
+            buffer[sizeof(buffer)-1] = '\0';
+            /* ldchar copia y recorta (trim) los espacios a la derecha */
+            ldchar(buffer, stleng(buffer), clean_buffer);
+
+            snprintf( dest, remaining, "%s", clean_buffer );
+          }
+        } else {
+            snprintf( dest, remaining, "%s", "ERROR" );
+        }
+        mi_free(clean_buffer);
         break;
       case SQLSMFLOAT:
         snprintf( dest, remaining, "%.*f", FLT_DIG, *(mi_real*)valueBuffer );
@@ -681,7 +700,12 @@ mi_integer columnValueToString( MI_ROW *row, mi_integer index, char *dest, mi_in
         break;
       case SQLDTIME:
         stringValue = mi_datetime_to_string( (mi_datetime*)valueBuffer );
-        strncat( dest, stringValue, remaining - 1 );
+
+        char *stringBuffer = (char *)mi_alloc(stleng(stringValue));
+        ldchar(stringValue, stleng(stringValue), stringBuffer);
+        strncat( dest, stringBuffer, remaining - 1 );
+
+        mi_free( stringBuffer );
         mi_free( stringValue );
         break;
       case SQLCHAR:
@@ -710,9 +734,14 @@ mi_integer columnValueToString( MI_ROW *row, mi_integer index, char *dest, mi_in
         break;
     }
   }
+  else if (MI_NULL_VALUE) {
+    ISSDEBUG(syslog( LOG_INFO, "Function %s: NULL value type index [%d]\n" , __FUNCTION__, index );)
+    strncat( dest, "", remaining - 1 );
+  }
   else
   {
-    ISSDEBUG(syslog( LOG_INFO, "Function %s: Unknown value type\n" , __FUNCTION__ );)
+    ISSDEBUG(syslog( LOG_INFO, "Function %s: Unknown value type [%d] index [%d]\n" , __FUNCTION__, valueType, index );)
+    dest="";
   }
 
   return (mi_integer)strlen( dest );
@@ -1149,8 +1178,6 @@ MI_CALLBACK_STATUS am_eot_cb (MI_EVENT_TYPE type, MI_CONNECTION *conn, void *ser
          if( endxact_payload == NULL ) return MI_CB_CONTINUE;
        
          ISSDEBUG(syslog( LOG_INFO, "Function %s: Publishing transaction info.\n"  , __FUNCTION__ );)
-         MqttPublish publish;
-         memset( &publish , 0 , sizeof( MqttPublish ) );
 
 /*
  * NOTE: The order of transactions in a begin work/commit work block is in reverse order on the linked list.
@@ -1163,15 +1190,18 @@ MI_CALLBACK_STATUS am_eot_cb (MI_EVENT_TYPE type, MI_CONNECTION *conn, void *ser
          ENDXACT_PAYLOAD *nextptr = NULL;
       
          while (reverse != NULL) {
+            ISSDEBUG(syslog( LOG_INFO, "Function %s: Reversing transaction Reverse: %p Next: %p \n"  , __FUNCTION__, reverse, reverse->next );)
             nextptr = reverse->next;   // save next node
             reverse->next = current;   // reverse pointer
             current = reverse;         // move current forward
             reverse = nextptr;         // move reverse forward
          }
 
+         MqttPublish publish;
+         memset( &publish , 0 , sizeof( MqttPublish ) );
+
          while( current != NULL )
          {
-            ISSDEBUG(syslog( LOG_INFO, "Function %s: Payload found.\n"  , __FUNCTION__ );)
             ISSDEBUG(syslog( LOG_INFO, "Function %s: Publish topic is %s.\n"  , __FUNCTION__ , current->topic );)
 
             size_t payload_length = current->payload ? strnlen( current->payload, (size_t)MAX_PAYLOAD_SIZE) : 0;
@@ -1190,7 +1220,7 @@ MI_CALLBACK_STATUS am_eot_cb (MI_EVENT_TYPE type, MI_CONNECTION *conn, void *ser
               ISSDEBUG(syslog( LOG_INFO, "Function %s: Published payload.\n"  , __FUNCTION__ );)
             }
             current = current->next;
-            ISSDEBUG(syslog( LOG_INFO, "Function %s: Checking for more payload.\n"  , __FUNCTION__ );)
+            ISSDEBUG(syslog( LOG_INFO, "Function %s: Next payload ptr: %p.\n"  , __FUNCTION__, current );)
          }
          break;
     default:
