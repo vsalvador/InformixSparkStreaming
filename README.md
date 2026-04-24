@@ -129,18 +129,21 @@ The extension leverages Informix’s **Virtual Index Interface (V-II)** to inter
 ### High-Level Flow
 
 ```mermaid
-flowchart LR
-    A["Application / SQL Client\nINSERT / UPDATE / DELETE"]
-    B["Informix Engine\nTable + Streaming Index"]
-    C["V-II Index Trigger\ninformix_socket_streaming"]
+flowchart TD
+    A["Application / SQL Client"]
+    B["Informix Engine\n(Table + Streaming Index)"]
+    C["V-II Index Trigger"]
     D["Streaming Extension (UDR)\nC DataBlade"]
-    E["MQTT Client Layer\nCSV Formatter + Publisher"]
+    E["MQTT Client Layer\n(CSV Formatter + Publisher)"]
     F["MQTT Broker"]
-    G1["Stream Processing\n(Spark, Flink)"]
-    G2["ETL / Data Pipelines"]
-    G3["Monitoring / Logging\nSystems"]
 
-    A --> B
+    subgraph Consumers
+        G1["Stream Processing\n(Spark, Flink)"]
+        G2["ETL / Data Pipelines"]
+        G3["Monitoring / Logging"]
+    end
+
+    A -->|INSERT / UPDATE / DELETE| B
     B --> C
     C --> D
     D --> E
@@ -149,47 +152,6 @@ flowchart LR
     F --> G2
     F --> G3
 ```
-
-<!---
-+---------------------+
-|  Application / SQL  |
-| (INSERT/UPDATE/DEL) |
-+----------+----------+
-           |
-           v
-+---------------------+
-|  Informix Engine    |
-|  (Table + Index)    |
-+----------+----------+
-           |
-           | V-II Trigger (Index USING informix_socket_streaming)
-           v
-+------------------------------+
-| Informix Socket Extension    |
-| (C UDR / DataBlade)          |
-+----------+-------------------+
-           |
-           | Format row change (CSV)
-           | Add metadata (op, host, db, table)
-           v
-+------------------------------+
-| MQTT Client (embedded)       |
-+----------+-------------------+
-           |
-           | Publish
-           v
-+------------------------------+
-| MQTT Broker                  |
-+----------+-------------------+
-           |
-     +-----+------+----------------------+
-     |            |                      |
-     v            v                      v
-+-----------+ +-----------+ +----------------------+
-| Consumers | | Streaming | | Data Processing Apps |
-| (IoT, ETL)| | (Spark)   | | (Analytics, APIs)    |
-+-----------+ +-----------+ +----------------------+
--->
 
 ---
 
