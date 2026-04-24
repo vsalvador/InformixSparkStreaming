@@ -130,15 +130,15 @@ The extension leverages Informix’s **Virtual Index Interface (V-II)** to inter
 
 ```mermaid
 flowchart LR
-    A[Application / SQL Client\nINSERT / UPDATE / DELETE]
-    B[Informix Engine\nTable + Streaming Index]
-    C[V-II Index Trigger\ninformix_socket_streaming]
-    D[Streaming Extension (UDR)\nC DataBlade]
-    E[MQTT Client Layer\n(CSV Formatter + Publisher)]
-    F[MQTT Broker]
-    G1[Stream Processing\n(Spark, Flink)]
-    G2[ETL / Data Pipelines]
-    G3[Monitoring / Logging\nSystems]
+    A["Application / SQL Client\nINSERT / UPDATE / DELETE"]
+    B["Informix Engine\nTable + Streaming Index"]
+    C["V-II Index Trigger\ninformix_socket_streaming"]
+    D["Streaming Extension (UDR)\nC DataBlade"]
+    E["MQTT Client Layer\nCSV Formatter + Publisher"]
+    F["MQTT Broker"]
+    G1["Stream Processing\n(Spark, Flink)"]
+    G2["ETL / Data Pipelines"]
+    G3["Monitoring / Logging\nSystems"]
 
     A --> B
     B --> C
@@ -150,7 +150,7 @@ flowchart LR
     F --> G3
 ```
 
-```text
+<!---
 +---------------------+
 |  Application / SQL  |
 | (INSERT/UPDATE/DEL) |
@@ -189,7 +189,7 @@ flowchart LR
 | Consumers | | Streaming | | Data Processing Apps |
 | (IoT, ETL)| | (Spark)   | | (Analytics, APIs)    |
 +-----------+ +-----------+ +----------------------+
-```
+-->
 
 ---
 
