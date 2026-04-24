@@ -1,57 +1,339 @@
-This demo is a modification to the originl InforixSparkStreaming. The changes here were needed to allow for proper transaction processing. As such much of the original code is still in use. Below is the original text of the README file. To get started with this version read the setup_vii_demo.txt file.
-
-### Changes in this version
-* Added transactional support Modifications to only publish to MQTT when a transaction is successfully completed
-* Removed code that set the MQTT topic to the table name
-* Added ability to set the MQTT topic upon index creation
-* Added ability to set the MQTT QoS upon index creation
-* Added hostname, database name and table name to output
-* Changed demo to work with stores_demo database
-* Changed examples to include new required topic parameter
-* Fixed lots of memory leaking issues
-* Add support for BOOLEAN, SERIAL8, INT8, NCHAR and NVARCHAR SQL types
-
-### Original text
 # Informix Socket Streaming
 
-Informix Socket Streaming is an extension of Informix that allows data to be streamed out of the database as soon as it is inserted, updated, or deleted.
+**Informix Socket Streaming** is an extension for Informix that enables real-time data streaming. Whenever rows are inserted, updated, or deleted, the changes are immediately published to an MQTT broker.
 
-The protocol currently used to stream the changes is MQTT v3.1.1 (older versions not supported!). This extension is able to stream data to any MQTT broker where it can be processed or passed on to subscribing clients for processing.
+The extension uses the **MQTT v3.1.1 protocol** (older versions are not supported) and can stream data to any compatible MQTT broker, where it can be consumed by subscribing clients or downstream systems.
 
-#### Value Proposition
-[This presentation](http://www.slideshare.net/deepind/informix-mqtt-streaming) provides the background and the value proposition of this solution. Along with the use cases across multiple industry sectors, understand the need for fast streaming of data from an Informix database. The presentation also shows the architecture and implementation of a demo based on Internet of Things (IoT) sensor data for the healthcare industry.
+This project is based on a modified version of the original IBM repository (`IBM-IoT/InformixSparkStreaming`). After real-world production use, several issues and missing features were identified and addressed in this version.
 
-## Build and Install
+---
 
-#### Pre-requisites
-* autoconf, automake, libtool
-* gcc
-* git
+## Features
 
-#### Build/Install
-To build and install this extension run `setup.sh` in the main directory.
-You need to be logged in as an Informix user and the environment
-variable `$INFORMIXDIR` needs to be set properly
+* Real-time streaming of database changes (INSERT, UPDATE, DELETE)
+* MQTT-based messaging (v3.1.1)
+* Easy integration via Informix indexing mechanism
+* Support for multiple common Informix data types
 
-This script should retrieve the required libraries using Git, build them,
-build the extension and install it in `$INFORMIXDIR/extend/`
+---
 
-## Now what?
-To use this extension, you will need to register the extension and its functions with a database.
-Then, you can configure it to stream data from any table as rows get added, deleted, or modified.
+## Supported Informix Versions
 
-To learn more about how to use the extension, see the example SQL files in `examples/`
+This extension has been tested with:
 
-The following column data types are currently supported:
-* CHAR
-* NCHAR
-* VARCHAR
-* NVARCHAR
-* SMALLINT, INTEGER, INTEGER8
-* SMALLFLOAT, FLOAT
-* DECIMAL
-* SERIAL
-* SERIAL8
-* MONEY
-* DATE ... DATETIME YEAR TO FRACTION(5)
-* BOOLEAN
+* Informix 12.10
+* Informix 14.10
+
+> ⚠️ Other versions may work but have not been officially tested. Compatibility depends on the Informix DataBlade/extension APIs available in your installation.
+
+---
+
+## Supported Data Types
+
+The following column types are currently supported:
+
+* `CHAR`, `NCHAR`
+* `VARCHAR`, `NVARCHAR`
+* `SMALLINT`, `INTEGER`, `INT8`
+* `SMALLFLOAT`, `FLOAT`
+* `DECIMAL`
+* `SERIAL`, `SERIAL8`
+* `MONEY`
+* `DATE` to `DATETIME YEAR TO FRACTION(5)`
+* `BOOLEAN`
+
+---
+
+## Installation
+
+### Prerequisites
+
+* `autoconf`
+* `automake`
+* `libtool`
+* `gcc`
+* `git`
+
+You must also:
+
+* Be logged in as an Informix user
+* Have the `$INFORMIXDIR` environment variable properly set
+
+### Build & Install
+
+Run the following script from the project root:
+
+```bash
+./setup.sh
+```
+
+This script will:
+
+* Download required dependencies via Git
+* Build the necessary libraries
+* Install them into `$INFORMIXDIR/lib/`
+* Build extension and install it into `$INFORMIXDIR/extend/`
+
+---
+
+## Setup
+
+Before using the extension, you need to configure a secondary access method using this extension.
+
+Run the setup script provided in:
+
+```
+examples/setup.sql
+```
+
+Execute it with:
+
+```bash
+dbaccess <database_name> examples/setup.sql
+```
+
+---
+
+## Usage
+
+Once the setup is complete, you can create indexes that stream data via MQTT.
+
+### Example
+
+```sql
+CREATE INDEX i_indexname_socket
+ON test(col1, col2, col3)
+USING informix_socket_streaming(
+    topic='mytopic',
+    host='localhost',
+    port='1883',
+    qos='0'
+);
+```
+
+### Parameters
+
+* **topic**: MQTT topic where data will be published
+* **host**: Hostname or IP address of the MQTT broker
+* **port**: Port of the MQTT broker
+* **qos** *(optional)*: MQTT Quality of Service level
+
+  * If `qos > 0`, messages are sent with the persistent flag enabled
+
+---
+
+## Architecture
+
+The extension leverages Informix’s **Virtual Index Interface (V-II)** to intercept table operations and stream them externally via MQTT. When a row is inserted, updated, or deleted, the index triggers a user-defined routine (UDR) that formats and publishes the change.
+
+### High-Level Flow
+
+flowchart LR
+    A[Application / SQL Client\nINSERT / UPDATE / DELETE]
+    B[Informix Engine\nTable + Streaming Index]
+    C[V-II Index Trigger\ninformix_socket_streaming]
+    D[Streaming Extension (UDR)\nC DataBlade]
+    E[MQTT Client Layer\n(CSV Formatter + Publisher)]
+    F[MQTT Broker]
+    G1[Stream Processing\n(Spark, Flink)]
+    G2[ETL / Data Pipelines]
+    G3[Monitoring / Logging\nSystems]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    F --> G1
+    F --> G2
+    F --> G3
+
+```text
++---------------------+
+|  Application / SQL  |
+| (INSERT/UPDATE/DEL) |
++----------+----------+
+           |
+           v
++---------------------+
+|  Informix Engine    |
+|  (Table + Index)    |
++----------+----------+
+           |
+           | V-II Trigger (Index USING informix_socket_streaming)
+           v
++------------------------------+
+| Informix Socket Extension    |
+| (C UDR / DataBlade)          |
++----------+-------------------+
+           |
+           | Format row change (CSV)
+           | Add metadata (op, host, db, table)
+           v
++------------------------------+
+| MQTT Client (embedded)       |
++----------+-------------------+
+           |
+           | Publish
+           v
++------------------------------+
+| MQTT Broker                  |
++----------+-------------------+
+           |
+     +-----+------+----------------------+
+     |            |                      |
+     v            v                      v
++-----------+ +-----------+ +----------------------+
+| Consumers | | Streaming | | Data Processing Apps |
+| (IoT, ETL)| | (Spark)   | | (Analytics, APIs)    |
++-----------+ +-----------+ +----------------------+
+```
+
+---
+
+### Key Architectural Notes
+
+* The solution uses **index-based triggers (V-II)** instead of log-based CDC.
+* Streaming is **synchronous** with the database operation (can impact write latency).
+* Messages are stored in memory **row-by-row** as changes occur. When transaction commit is executed all stored changes are flushed to MQTT broker.
+
+---
+
+## MQTT Message Format
+
+Each database operation generates a **CSV message** published to the configured MQTT topic.
+
+### General Structure
+
+Each message contains the following fields in order:
+
+1. **Operation type**
+
+   * `i` = INSERT
+   * `u` = UPDATE
+   * `d` = DELETE
+
+2. **Hostname** (database server)
+
+3. **Database name**
+
+4. **Table name**
+
+5. **Indexed column values** (in the same order as defined in the index)
+
+### Field Formatting Rules
+
+* **Character fields** are enclosed in double quotes (`"value"`)
+* **Numeric fields** are not quoted
+* **Boolean fields** are represented as `true` or `false`
+* Fields are separated by commas (`,`)
+
+---
+
+### Examples
+
+Assume the following index:
+
+```sql
+CREATE INDEX i_indexname_socket
+ON test(col1, col2, col3)
+USING informix_socket_streaming(...);
+```
+
+#### INSERT
+
+```csv
+i,myhost,mydb,test,"value1",123,true
+```
+
+#### DELETE
+
+```csv
+d,myhost,mydb,test,"value1",123,true
+```
+
+#### UPDATE
+
+An update operation produces **two CSV lines**:
+
+1. **New (updated) values**
+2. **Previous (old) values**
+
+```csv
+u,myhost,mydb,test,"new_value",456,false
+u,myhost,mydb,test,"old_value",123,true
+```
+
+> ℹ️ Notes:
+>
+> * The order of column values strictly follows the index definition.
+> * For UPDATE operations, both the new and old states are emitted to allow downstream systems to compute differences.
+> * Consumers should handle UPDATE messages as paired events (first line = new values, second line = old values).
+
+---
+
+## Value Proposition
+
+A presentation explaining the architecture, use cases, and motivation behind this project is available here:
+
+http://www.slideshare.net/deepind/informix-mqtt-streaming
+
+It covers:
+
+* Real-time data streaming needs
+* Industry use cases (including IoT and healthcare)
+* System architecture and demo implementation
+
+---
+
+## Examples
+
+To learn more, check the sample SQL files in:
+
+* `examples/`
+* `examples-stores7/`
+
+---
+
+## Changelog
+
+See the `CHANGELOG` file for a detailed list of changes.
+
+---
+
+## Troubleshooting
+
+### High Memory Usage / Virtual Memory Exhausted
+
+When working with large tables or high-volume transactions, this extension can require a significant amount of memory.
+
+#### Symptoms
+
+You may encounter errors such as:
+
+* `Informix server virtual memory exhausted`
+* Unexpected failures during index creation
+* Transactions failing when processing large batches of data
+* Assert files
+
+#### When This Happens
+
+This typically occurs in the following scenarios:
+
+* Creating a streaming index on a **large existing table**
+* Executing **bulk inserts, updates, or deletes**
+* Running **large transactions** that affect many indexed rows
+
+Because the extension processes row changes synchronously and formats messages for each affected row, memory usage can grow quickly under heavy workloads.
+
+#### Why It Happens
+
+* The streaming extension allocates memory for all messages into each transaction. Memory is not flushed until the transaction is closed.
+* Large transactions accumulate many row events before completion
+
+#### Recommendations
+
+* Increase Informix **virtual memory configuration** (e.g., `SHMTOTAL`, `SHMVIRTSIZE`)
+* Break large operations into **smaller batches**
+* Create the index **before loading data**, when possible
+

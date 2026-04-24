@@ -1,4 +1,4 @@
-# This demo was created and tested on RHEL 7.3 and tested with Informix 12.10.FC7
+# This demo was created and tested on RHEL 9.7 and tested with Informix 14.10.FC12
 
 # NOTES:
 # All commands are ran from the directory in which the VII/MQTT demo has been extracted
