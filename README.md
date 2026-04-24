@@ -128,6 +128,7 @@ The extension leverages Informix’s **Virtual Index Interface (V-II)** to inter
 
 ### High-Level Flow
 
+```mermaid
 flowchart LR
     A[Application / SQL Client\nINSERT / UPDATE / DELETE]
     B[Informix Engine\nTable + Streaming Index]
@@ -147,6 +148,7 @@ flowchart LR
     F --> G1
     F --> G2
     F --> G3
+```
 
 ```text
 +---------------------+
