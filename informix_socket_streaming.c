@@ -83,6 +83,33 @@ int nextMQTTClientID = 0;
 
 int *lastPacketID = NULL;
 
+static int safe_append(char *dst, size_t dst_size, const char *src)
+{
+    if (!dst || !src || dst_size == 0)
+        return -1;
+
+    size_t dst_len = strnlen(dst, dst_size);
+
+    if (dst_len >= dst_size)
+        return -1;
+
+    size_t remaining = dst_size - dst_len - 1;
+
+    size_t src_len = strnlen(src, remaining + 1);
+
+    if (src_len > remaining)
+    {
+        memcpy(dst + dst_len, src, remaining);
+        dst[dst_size - 1] = '\0';
+        return -1;
+    }
+
+    memcpy(dst + dst_len, src, src_len);
+    dst[dst_len + src_len] = '\0';
+
+    return 0;
+}
+
 ENDXACT_PAYLOAD* xact_payload_new( char *payload , ISS_MQTTSettings *mqtt, char *topic)
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
@@ -693,17 +720,17 @@ mi_integer columnValueToString( MI_ROW *row, mi_integer index, char *dest, mi_in
         break;
       case SQLMONEY:
         stringValue = mi_money_to_string( (mi_money*)valueBuffer );
-        strncat( dest, stringValue, remaining - 1 );
+        safe_append(dest, remaining, stringValue);
         mi_free( stringValue );
         break;
       case SQLDECIMAL:
         stringValue = mi_decimal_to_string( (mi_decimal*)valueBuffer );
-        strncat( dest, stringValue, remaining - 1 );
+        safe_append(dest, remaining, stringValue);
         mi_free( stringValue );
         break;
       case SQLDATE:
         stringValue = mi_date_to_string( *(mi_date*)(&valueBuffer) );
-        strncat( dest, stringValue, remaining - 1 );
+        safe_append(dest, remaining, stringValue);
         mi_free( stringValue );
         break;
       case SQLDTIME:
@@ -714,7 +741,7 @@ mi_integer columnValueToString( MI_ROW *row, mi_integer index, char *dest, mi_in
         ldchar(stringValue, len, stringBuffer);
         stringBuffer[len] = '\0';
 
-        strncat( dest, stringBuffer, remaining - 1 );
+        safe_append(dest, remaining, stringBuffer);
 
         mi_free( stringBuffer );
         mi_free( stringValue );
@@ -733,7 +760,7 @@ mi_integer columnValueToString( MI_ROW *row, mi_integer index, char *dest, mi_in
 
         if (strcmp(typeName, "informix.boolean") == 0) {
           mi_boolean bool_val = *(mi_boolean*)(&valueBuffer);
-          strncat( dest, (bool_val == '\01' ? "true" : "false") , remaining - 1 );
+          safe_append(dest, remaining, (bool_val == '\01' ? "true" : "false"));
         } else {
           ISSDEBUG(syslog( LOG_INFO, "Function %s: Unknown column type ID: %d (%s)\n" , __FUNCTION__ , columnTypeID, typeName);)
         }
@@ -747,7 +774,7 @@ mi_integer columnValueToString( MI_ROW *row, mi_integer index, char *dest, mi_in
   }
   else if (valueType == MI_NULL_VALUE) {
     ISSDEBUG(syslog( LOG_INFO, "Function %s: NULL value type index [%d]\n" , __FUNCTION__, index );)
-    strncat( dest, "", remaining - 1 );
+    //safe_append(dest, remaining, "");
   }
   else
   {
@@ -758,6 +785,49 @@ mi_integer columnValueToString( MI_ROW *row, mi_integer index, char *dest, mi_in
   return (mi_integer)strlen( dest );
 }
 
+void rowToCSV(MI_ROW *row, char *dest, mi_integer remaining)
+{
+  ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
+  ISSDEBUG(syslog( LOG_INFO, "Entering function %s\n" , __FUNCTION__ );)
+
+  if (!row || !dest || remaining <= 0)
+      return;
+
+  dest[0] = '\0';
+
+  mi_integer numCols = mi_column_count((MI_ROW_DESC*)row);
+
+  for (mi_integer i = 0; i < numCols; i++)
+  {
+      char columnBuffer[4096];
+
+      memset(columnBuffer, 0, sizeof(columnBuffer));
+
+      columnValueToString(
+            row,
+            i,
+            columnBuffer,
+            sizeof(columnBuffer)
+        );
+
+        if (safe_append(dest, (size_t)remaining, columnBuffer) != 0)
+        {
+            ISSDEBUG(syslog(LOG_INFO, "rowToCSV: payload truncated at column %d\n", i);)
+            break;
+        }
+
+        if (i < numCols - 1)
+        {
+            if (safe_append(dest, (size_t)remaining, ",") != 0)
+            {
+                ISSDEBUG(syslog(LOG_INFO, "rowToCSV: payload truncated adding comma\n");)
+                break;
+            }
+        }
+  }
+}
+
+/*
 void rowToCSV( MI_ROW *row, char *dest, mi_integer remaining )
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
@@ -774,11 +844,13 @@ void rowToCSV( MI_ROW *row, char *dest, mi_integer remaining )
     left -= written;
     if( left <= 2 ) break;  // no hay espacio ni para "," + \0
 
-    if( i < numCols - 1 ) strcat( offset , "," );
+    if( i < numCols - 1 ) 
+       safe_append(dest, MAX_PAYLOAD_SIZE, ",");
     offset = strchr( offset , 0 );
     left = remaining - (mi_integer)(offset - dest);
   }
 }
+*/
 
 static mi_integer ensureEotCallbackRegistered()
 {
@@ -954,15 +1026,17 @@ mi_integer am_insert( MI_AM_TABLE_DESC *tableDesc, MI_ROW *row, MI_AM_ROWID_DESC
   mi_string *tabName = mi_tab_table_name( tableDesc );
 
   memset( payload , 0 , MAX_PAYLOAD_SIZE );
-  strcat( payload , "i," );
+  safe_append(payload, MAX_PAYLOAD_SIZE, "i,");
+
 /*  mi_string *srvrName = mi_tab_server_name( tableDesc ); 
-  strcat( payload , srvrName ); */
-  strcat( payload , hostname );
-  strcat( payload , "," );
-  strcat( payload , dbName );
-  strcat( payload , "," );
-  strcat( payload , tabName );
-  strcat( payload , "," );
+  safe_append(payload, MAX_PAYLOAD_SIZE, srvrName);
+ */
+  safe_append(payload, MAX_PAYLOAD_SIZE, hostname);
+  safe_append(payload, MAX_PAYLOAD_SIZE, ",");
+  safe_append(payload, MAX_PAYLOAD_SIZE, dbName);
+  safe_append(payload, MAX_PAYLOAD_SIZE, ",");
+  safe_append(payload, MAX_PAYLOAD_SIZE, tabName);
+  safe_append(payload, MAX_PAYLOAD_SIZE, ",");
 
   char *csvStart = strchr( payload, 0 );
   mi_integer remaining = MAX_PAYLOAD_SIZE - (mi_integer)(csvStart - payload) - 1;
