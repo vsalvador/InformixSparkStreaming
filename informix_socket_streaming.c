@@ -720,17 +720,17 @@ mi_integer columnValueToString( MI_ROW *row, mi_integer index, char *dest, mi_in
         break;
       case SQLMONEY:
         stringValue = mi_money_to_string( (mi_money*)valueBuffer );
-        safe_append(dest, remaining, stringValue);
+        snprintf(dest, remaining, stringValue);
         mi_free( stringValue );
         break;
       case SQLDECIMAL:
         stringValue = mi_decimal_to_string( (mi_decimal*)valueBuffer );
-        safe_append(dest, remaining, stringValue);
+        snprintf(dest, remaining, stringValue);
         mi_free( stringValue );
         break;
       case SQLDATE:
         stringValue = mi_date_to_string( *(mi_date*)(&valueBuffer) );
-        safe_append(dest, remaining, stringValue);
+        snprintf(dest, remaining, stringValue);
         mi_free( stringValue );
         break;
       case SQLDTIME:
@@ -741,7 +741,7 @@ mi_integer columnValueToString( MI_ROW *row, mi_integer index, char *dest, mi_in
         ldchar(stringValue, len, stringBuffer);
         stringBuffer[len] = '\0';
 
-        safe_append(dest, remaining, stringBuffer);
+        snprintf(dest, remaining, stringBuffer);
 
         mi_free( stringBuffer );
         mi_free( stringValue );
@@ -760,7 +760,7 @@ mi_integer columnValueToString( MI_ROW *row, mi_integer index, char *dest, mi_in
 
         if (strcmp(typeName, "informix.boolean") == 0) {
           mi_boolean bool_val = *(mi_boolean*)(&valueBuffer);
-          safe_append(dest, remaining, (bool_val == '\01' ? "true" : "false"));
+          snprintf(dest, remaining, (bool_val == '\01' ? "true" : "false"));
         } else {
           ISSDEBUG(syslog( LOG_INFO, "Function %s: Unknown column type ID: %d (%s)\n" , __FUNCTION__ , columnTypeID, typeName);)
         }
