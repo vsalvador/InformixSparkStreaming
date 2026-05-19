@@ -110,6 +110,66 @@ static int safe_append(char *dst, size_t dst_size, const char *src)
     return 0;
 }
 
+static int csv_escape_append(char *dst, size_t dst_size, const char *src)
+{
+    if (!dst || !src || dst_size == 0)
+        return -1;
+
+    size_t dst_len = strnlen(dst, dst_size);
+
+    if (dst_len >= dst_size)
+        return -1;
+
+    char *p = dst + dst_len;
+    size_t remaining = dst_size - dst_len;
+
+    // opening quote
+    if (remaining <= 1)
+        goto truncated;
+
+    *p++ = '"';
+    remaining--;
+
+    while (*src)
+    {
+        if (*src == '"')
+        {
+            // need space for doubled quotes
+            if (remaining <= 2)
+                goto truncated;
+
+            *p++ = '"';
+            *p++ = '"';
+            remaining -= 2;
+        }
+        else
+        {
+            if (remaining <= 1)
+                goto truncated;
+
+            *p++ = *src;
+            remaining--;
+        }
+
+        src++;
+    }
+
+    // closing quote
+    if (remaining <= 1)
+        goto truncated;
+
+    *p++ = '"';
+    *p = '\0';
+
+    return 0;
+
+truncated:
+    if (dst_size > 0)
+        dst[dst_size - 1] = '\0';
+
+    return -1;
+}
+
 ENDXACT_PAYLOAD* xact_payload_new( char *payload , ISS_MQTTSettings *mqtt, char *topic)
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
@@ -698,7 +758,7 @@ mi_integer columnValueToString( MI_ROW *row, mi_integer index, char *dest, mi_in
         char buffer[30];                          // Buffer to hold the string
         char *clean_buffer = (char *)mi_alloc(30); // Buffer to tream the string
 
-        if (buffer != NULL && clean_buffer != NULL) {
+        if (clean_buffer != NULL) {
           mint ret = ifx_int8toasc((mi_int8 *)valueBuffer, buffer, sizeof(buffer)-1);
           if (ret == 0) {
             buffer[sizeof(buffer)-1] = '\0';
@@ -751,7 +811,7 @@ mi_integer columnValueToString( MI_ROW *row, mi_integer index, char *dest, mi_in
       case SQLNCHAR:
       case SQLNVCHAR:
         stringValue = mi_lvarchar_to_string( (mi_lvarchar*)valueBuffer );
-        snprintf( dest, remaining, "\"%s\"", stringValue );
+        csv_escape_append(dest, remaining, stringValue);
         mi_free( stringValue );
         break;
       case SQLUDTFIXED:
@@ -1038,7 +1098,7 @@ mi_integer am_insert( MI_AM_TABLE_DESC *tableDesc, MI_ROW *row, MI_AM_ROWID_DESC
   safe_append(payload, MAX_PAYLOAD_SIZE, tabName);
   safe_append(payload, MAX_PAYLOAD_SIZE, ",");
 
-  char *csvStart = strchr( payload, 0 );
+  char *csvStart = payload + strlen(payload);
   mi_integer remaining = MAX_PAYLOAD_SIZE - (mi_integer)(csvStart - payload) - 1;
   rowToCSV( row, csvStart, remaining );
 
@@ -1113,7 +1173,7 @@ mi_integer am_update( MI_AM_TABLE_DESC *tableDesc,
   safe_append(payload, MAX_PAYLOAD_SIZE, tabName);
   safe_append(payload, MAX_PAYLOAD_SIZE, ",");
 
-  csvStart = strchr( payload, 0 );
+  csvStart = payload + strlen(payload);
   remaining = MAX_PAYLOAD_SIZE - (mi_integer)(csvStart - payload) - 1;
   rowToCSV( newRow, csvStart, remaining );
 
@@ -1129,7 +1189,7 @@ mi_integer am_update( MI_AM_TABLE_DESC *tableDesc,
   safe_append(payload, MAX_PAYLOAD_SIZE, tabName);
   safe_append(payload, MAX_PAYLOAD_SIZE, ",");
 
-  csvStart = strchr( payload, 0 );
+  csvStart = payload + strlen(payload);
   remaining = MAX_PAYLOAD_SIZE - (mi_integer)(csvStart - payload) - 1;
   rowToCSV( oldRow, csvStart, remaining );
 
@@ -1197,7 +1257,7 @@ mi_integer am_delete( MI_AM_TABLE_DESC *tableDesc, MI_ROW *row, MI_AM_ROWID_DESC
   safe_append(payload, MAX_PAYLOAD_SIZE, tabName);
   safe_append(payload, MAX_PAYLOAD_SIZE, ",");
 
-  char *csvStart = strchr( payload, 0 );
+  char *csvStart = payload + strlen(payload);
   mi_integer remaining = MAX_PAYLOAD_SIZE - (mi_integer)(csvStart - payload) - 1;
   rowToCSV( row, csvStart, remaining );
 
