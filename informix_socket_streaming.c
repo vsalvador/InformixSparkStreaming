@@ -1101,27 +1101,33 @@ mi_integer am_update( MI_AM_TABLE_DESC *tableDesc,
   gethostname(hostname , HOST_NAME_MAX);
 
   memset( payload , 0 , MAX_PAYLOAD_SIZE );
-  strcat( payload , "u," );
-  /* strcat( payload , srvrName ); */
-  strcat( payload , hostname );
-  strcat( payload , "," );
-  strcat( payload , dbName );
-  strcat( payload , "," );
-  strcat( payload , tabName );
-  strcat( payload , "," );
+  safe_append(payload, MAX_PAYLOAD_SIZE, "u,");
+
+/*  mi_string *srvrName = mi_tab_server_name( tableDesc );
+  safe_append(payload, MAX_PAYLOAD_SIZE, srvrName);
+ */
+  safe_append(payload, MAX_PAYLOAD_SIZE, hostname);
+  safe_append(payload, MAX_PAYLOAD_SIZE, ",");
+  safe_append(payload, MAX_PAYLOAD_SIZE, dbName);
+  safe_append(payload, MAX_PAYLOAD_SIZE, ",");
+  safe_append(payload, MAX_PAYLOAD_SIZE, tabName);
+  safe_append(payload, MAX_PAYLOAD_SIZE, ",");
 
   csvStart = strchr( payload, 0 );
   remaining = MAX_PAYLOAD_SIZE - (mi_integer)(csvStart - payload) - 1;
   rowToCSV( newRow, csvStart, remaining );
 
-  strcat( payload , "\nu," );
-  /* strcat( payload , srvrName ); */
-  strcat( payload , hostname );
-  strcat( payload , "," );
-  strcat( payload , dbName );
-  strcat( payload , "," );
-  strcat( payload , tabName );
-  strcat( payload , "," );
+  safe_append(payload, MAX_PAYLOAD_SIZE, "\nu,");
+
+/* 
+  safe_append(payload, MAX_PAYLOAD_SIZE, srvrName);
+ */
+  safe_append(payload, MAX_PAYLOAD_SIZE, hostname);
+  safe_append(payload, MAX_PAYLOAD_SIZE, ",");
+  safe_append(payload, MAX_PAYLOAD_SIZE, dbName);
+  safe_append(payload, MAX_PAYLOAD_SIZE, ",");
+  safe_append(payload, MAX_PAYLOAD_SIZE, tabName);
+  safe_append(payload, MAX_PAYLOAD_SIZE, ",");
 
   csvStart = strchr( payload, 0 );
   remaining = MAX_PAYLOAD_SIZE - (mi_integer)(csvStart - payload) - 1;
@@ -1179,15 +1185,17 @@ mi_integer am_delete( MI_AM_TABLE_DESC *tableDesc, MI_ROW *row, MI_AM_ROWID_DESC
 
 
   memset( payload , 0 , MAX_PAYLOAD_SIZE );
-  strcat( payload , "d," );
-  /* mi_string *srvrName = mi_tab_server_name( tableDesc );
-  strcat( payload , srvrName ); */
-  strcat( payload , hostname );
-  strcat( payload , "," );
-  strcat( payload , dbName );
-  strcat( payload , "," );
-  strcat( payload , tabName );
-  strcat( payload , "," );
+  safe_append(payload, MAX_PAYLOAD_SIZE, "d,");
+
+/*  mi_string *srvrName = mi_tab_server_name( tableDesc );
+  safe_append(payload, MAX_PAYLOAD_SIZE, srvrName);
+ */
+  safe_append(payload, MAX_PAYLOAD_SIZE, hostname);
+  safe_append(payload, MAX_PAYLOAD_SIZE, ",");
+  safe_append(payload, MAX_PAYLOAD_SIZE, dbName);
+  safe_append(payload, MAX_PAYLOAD_SIZE, ",");
+  safe_append(payload, MAX_PAYLOAD_SIZE, tabName);
+  safe_append(payload, MAX_PAYLOAD_SIZE, ",");
 
   char *csvStart = strchr( payload, 0 );
   mi_integer remaining = MAX_PAYLOAD_SIZE - (mi_integer)(csvStart - payload) - 1;
