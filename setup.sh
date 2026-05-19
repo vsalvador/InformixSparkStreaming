@@ -164,7 +164,7 @@ cd ..
 echo -e "--------------------------------------";
 echo -e "Building UDR..."
 echo -e "--------------------------------------\n";
-DEBUGC="-fsanitize=address -fno-omit-frame-pointer -g"
+##DEBUGC="-fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer -g"
 DEBUGC="-fno-omit-frame-pointer -g"
 
 gcc $DEBUGC -Wall -fPIC -DWITH_ISS_DEBUG -DMI_SERVBUILD -I$LIB_DIR/include -I$INFORMIXDIR/incl/public -I$INFORMIXDIR/incl -c *.c

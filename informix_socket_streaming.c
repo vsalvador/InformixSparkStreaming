@@ -256,7 +256,7 @@ truncated:
 ENDXACT_PAYLOAD* xact_payload_new( char *payload , ISS_MQTTSettings *mqtt, char *topic)
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
-  ISSDEBUG(syslog( LOG_INFO, "Function %s: payload is %s\n" , __FUNCTION__ , payload);)
+  ISSDEBUG(syslog( LOG_INFO, "Begin %s\n" , __FUNCTION__ );)
 
   mi_integer topicLen = strlen( topic );
 
@@ -271,7 +271,7 @@ ENDXACT_PAYLOAD* xact_payload_new( char *payload , ISS_MQTTSettings *mqtt, char 
   newxact->topic = ownedTopic;
   newxact->payload = payload;
   newxact->next  = NULL;
-  ISSDEBUG(syslog( LOG_INFO, "Function %s: newxact topic:%s payload:%s\n" , __FUNCTION__ , newxact->topic, newxact->payload);)
+  ISSDEBUG(syslog( LOG_INFO, "Function %s: topic:%s payload:%s\n" , __FUNCTION__ , newxact->topic, newxact->payload);)
 
   return newxact;
 }
@@ -301,7 +301,6 @@ ENDXACT_PAYLOAD* xact_payload_add( ENDXACT_PAYLOAD *list, ENDXACT_PAYLOAD *link 
    }
    ISSDEBUG(syslog( LOG_INFO, "Function %s: list->payload is %s\n" , __FUNCTION__ , list->payload);)
 */
-   ISSDEBUG(syslog( LOG_INFO, "Function %s: link->payload is %s\n" , __FUNCTION__ , link->payload);)
 
    return link;
 }
@@ -536,10 +535,14 @@ ISS_ServerInfo* getMQTTServerInfo( MI_AM_TABLE_DESC *tableDesc )
     int serverPort = 0;
     int serverQoS  = 0;
 
+/*
     char *NameSaveptr;
     char *ValueSaveptr;
     char *paramName  = strtok_r( params, AMPARAM_TOKEN_DELIMITERS, &NameSaveptr );
     char *paramValue = strtok_r( NULL,   AMPARAM_TOKEN_DELIMITERS, &ValueSaveptr );
+*/
+    char *paramName  = strtok( params, AMPARAM_TOKEN_DELIMITERS );
+    char *paramValue = strtok( 0, AMPARAM_TOKEN_DELIMITERS );
 
     while( paramName != NULL )
     {
@@ -585,9 +588,13 @@ ISS_ServerInfo* getMQTTServerInfo( MI_AM_TABLE_DESC *tableDesc )
         ISSDEBUG(syslog( LOG_INFO, "Function %s: Unknown parameter name: %s\n" , __FUNCTION__ , paramName );)
         /* continue; */
       }
-
+/*
       paramName  = strtok_r( NULL, AMPARAM_TOKEN_DELIMITERS, &NameSaveptr );
       paramValue = strtok_r( NULL, AMPARAM_TOKEN_DELIMITERS, &ValueSaveptr );
+*/
+      paramName  = strtok( 0, AMPARAM_TOKEN_DELIMITERS );
+      paramValue = strtok( 0, AMPARAM_TOKEN_DELIMITERS );
+
     }
 
     if( serverTopic && serverHost && serverPort > 0 )
@@ -807,18 +814,21 @@ ISS_Index* getIndex(MI_AM_TABLE_DESC *tableDesc)
     if (indexList == NULL || tableDesc == NULL)
         return NULL;
 
-    /* ----------------------------
-     * LOCK GLOBAL INDEX STRUCTURE
-     * ---------------------------- */
-    if (mi_lock_memory(INDEX_LIST_MEMNAME, PER_SYSTEM) != MI_OK)
+    // ----------------------------
+    // LOCK GLOBAL INDEX STRUCTURE
+    // First index -> returns MI_NO_SUCH_NAME
+    // ----------------------------
+    if (mi_lock_memory(INDEX_LIST_MEMNAME, PER_SYSTEM) == MI_ERROR) {
+        ISSDEBUG(syslog(LOG_INFO, "Cannot lock named memory %s\n", INDEX_LIST_MEMNAME);)
         return NULL;
+    }
 
     mi_string *indexName = mi_tab_name(tableDesc);
     ISS_Index *index = NULL;
 
-    /* ----------------------------
-     * 1. FIND EXISTING INDEX
-     * ---------------------------- */
+    // ----------------------------
+    // 1. FIND EXISTING INDEX
+    // ----------------------------
     for (ISS_LinkedList *cur = *indexList; cur != NULL; cur = cur->next)
     {
         ISS_Index *idx = (ISS_Index*)cur->payload;
@@ -837,9 +847,9 @@ ISS_Index* getIndex(MI_AM_TABLE_DESC *tableDesc)
         return index;
     }
 
-    /* ----------------------------
-     * 2. CREATE OR REUSE SERVER INFO
-     * ---------------------------- */
+    // ----------------------------
+    // 2. CREATE OR REUSE SERVER INFO
+    // ----------------------------
     ISS_ServerInfo *newInfo = getMQTTServerInfo(tableDesc);
     if (newInfo == NULL)
     {
@@ -867,12 +877,12 @@ ISS_Index* getIndex(MI_AM_TABLE_DESC *tableDesc)
         }
     }
 
-    /* ----------------------------
-     * 3. OWNERSHIP DECISION
-     * ---------------------------- */
+    // ----------------------------
+    // 3. OWNERSHIP DECISION
+    // ----------------------------
     if (sharedInfo != NULL)
     {
-        /* reuse existing server info */
+        // reuse existing server info
         mi_free(newInfo->host);
         mi_free(newInfo->topic);
         mi_free(newInfo);
@@ -881,16 +891,16 @@ ISS_Index* getIndex(MI_AM_TABLE_DESC *tableDesc)
     }
     else
     {
-        /* first owner of this server info */
+        // first owner of this server info
         newInfo->refCount = 0;
     }
 
-    /* one index holds a reference */
+    // one index holds a reference
     newInfo->refCount++;
 
-    /* ----------------------------
-     * 4. CREATE INDEX
-     * ---------------------------- */
+    // ----------------------------
+    // 4. CREATE INDEX
+    // ----------------------------
     index = (ISS_Index*)mi_dalloc(sizeof(ISS_Index), PER_SYSTEM);
 
     size_t nameLen = strlen(indexName);
@@ -905,12 +915,12 @@ ISS_Index* getIndex(MI_AM_TABLE_DESC *tableDesc)
     index->serverInfo = newInfo;
     index->mqttList = NULL;
 
-    /* resolve topic from table */
+    // resolve topic from table
     getTableName(indexName, index->mqttTopic);
 
-    /* ----------------------------
-     * 5. INSERT INTO GLOBAL LIST
-     * ---------------------------- */
+    // ----------------------------
+    // 5. INSERT INTO GLOBAL LIST
+    // ----------------------------
     *indexList = ISS_LinkedList_add(*indexList, ISS_LinkedList_new(index));
 
     ISSDEBUG(syslog(LOG_INFO, "Function %s: Added index %s\n", __FUNCTION__, indexName);)
@@ -921,7 +931,7 @@ ISS_Index* getIndex(MI_AM_TABLE_DESC *tableDesc)
     return index;
 }
 
-/*******
+/****
 ISS_Index* getIndex( MI_AM_TABLE_DESC *tableDesc )
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
@@ -1476,12 +1486,12 @@ mi_integer am_insert( MI_AM_TABLE_DESC *tableDesc, MI_ROW *row, MI_AM_ROWID_DESC
   ISS_MQTTSettings *mqtt;
   char *payload;
 
-  ISSDEBUG(syslog( LOG_INFO, "Function %s: Inserting row into table...\n" , __FUNCTION__ );)
-
   if( ( index = getIndex( tableDesc ) ) == NULL ||
       ( mqtt = getMQTTClient( index ) ) == NULL ||
       ( payload = (char*)mi_dalloc( sizeof( char ) * MAX_PAYLOAD_SIZE , PER_TRANSACTION ) ) == NULL )
   {
+    ISSDEBUG(syslog( LOG_INFO, "Function %s: Warning, index not found.\n" , __FUNCTION__ );)
+
     mi_unlock_memory( INDEX_LIST_MEMNAME , PER_SYSTEM );
     return MI_OK;
   }
@@ -1509,13 +1519,14 @@ mi_integer am_insert( MI_AM_TABLE_DESC *tableDesc, MI_ROW *row, MI_AM_ROWID_DESC
   safe_append(payload, MAX_PAYLOAD_SIZE, ",");
   safe_append(payload, MAX_PAYLOAD_SIZE, tabName);
   safe_append(payload, MAX_PAYLOAD_SIZE, ",");
+  ISSDEBUG(syslog( LOG_INFO, "Function %s: payload is %s \n" , __FUNCTION__, payload );)
 
   char *csvStart = payload + strlen(payload);
   mi_integer remaining = MAX_PAYLOAD_SIZE - (mi_integer)(csvStart - payload) - 1;
   rowToCSV( row, csvStart, remaining );
 
+  ISSDEBUG(syslog( LOG_INFO, "Function %s: Adding payload with topic is %s.\n"  , __FUNCTION__ , mqtt->serverInfo->topic );)
 
-  ISSDEBUG(syslog( LOG_INFO, "Function %s: topic is %s.\n"  , __FUNCTION__ , mqtt->serverInfo->topic );)
   *endxact_payload = xact_payload_add( *endxact_payload , xact_payload_new( payload , mqtt , mqtt->serverInfo->topic ) );
 
   mi_free(dbName);
