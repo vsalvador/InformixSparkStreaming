@@ -263,9 +263,13 @@ ISS_ServerInfo* getMQTTServerInfo( MI_AM_TABLE_DESC *tableDesc )
     char *serverTopic = NULL;
     int serverPort = 0;
     int serverQoS  = 0;
-    char *paramName = strtok( params, AMPARAM_TOKEN_DELIMITERS );
-    char *paramValue = strtok( 0, AMPARAM_TOKEN_DELIMITERS );
-    while( paramName )
+
+    char *NameSaveptr;
+    char *ValueSaveptr;
+    char *paramName  = strtok_r( params, AMPARAM_TOKEN_DELIMITERS, &NameSaveptr );
+    char *paramValue = strtok_r( NULL,   AMPARAM_TOKEN_DELIMITERS, &ValueSaveptr );
+
+    while( paramName != NULL )
     {
       ISSDEBUG(syslog( LOG_INFO, "Function %s: Param is | %s | Value is: | %s |\n" , __FUNCTION__ , paramName , paramValue );)
       if( !paramValue )
@@ -310,8 +314,8 @@ ISS_ServerInfo* getMQTTServerInfo( MI_AM_TABLE_DESC *tableDesc )
         /* continue; */
       }
 
-      paramName  = strtok( 0, AMPARAM_TOKEN_DELIMITERS );
-      paramValue = strtok( 0, AMPARAM_TOKEN_DELIMITERS );
+      paramName  = strtok_r( NULL, AMPARAM_TOKEN_DELIMITERS, &NameSaveptr );
+      paramValue = strtok_r( NULL, AMPARAM_TOKEN_DELIMITERS, &ValueSaveptr );
     }
 
     if( serverTopic && serverHost && serverPort > 0 )
@@ -513,8 +517,12 @@ ISS_Index* getIndex( MI_AM_TABLE_DESC *tableDesc )
       {
         ISSDEBUG(syslog( LOG_INFO, "Function %s: index->serverInfo->topic is %s\n" , __FUNCTION__ , index->serverInfo->topic );)
         ISSDEBUG(syslog( LOG_INFO, "Function %s: serverInfo->topic is %s\n" , __FUNCTION__ , serverInfo->topic );)
+
+
         mi_free( serverInfo->host );
+        mi_free( serverInfo->topic );
         mi_free( serverInfo );
+
         serverInfo = index->serverInfo;
         break;
       }
@@ -701,8 +709,11 @@ mi_integer columnValueToString( MI_ROW *row, mi_integer index, char *dest, mi_in
       case SQLDTIME:
         stringValue = mi_datetime_to_string( (mi_datetime*)valueBuffer );
 
-        char *stringBuffer = (char *)mi_alloc(stleng(stringValue));
-        ldchar(stringValue, stleng(stringValue), stringBuffer);
+        size_t len = stleng(stringValue);
+        char *stringBuffer = mi_alloc(len + 1);
+        ldchar(stringValue, len, stringBuffer);
+        stringBuffer[len] = '\0';
+
         strncat( dest, stringBuffer, remaining - 1 );
 
         mi_free( stringBuffer );
@@ -734,14 +745,14 @@ mi_integer columnValueToString( MI_ROW *row, mi_integer index, char *dest, mi_in
         break;
     }
   }
-  else if (MI_NULL_VALUE) {
+  else if (valueType == MI_NULL_VALUE) {
     ISSDEBUG(syslog( LOG_INFO, "Function %s: NULL value type index [%d]\n" , __FUNCTION__, index );)
     strncat( dest, "", remaining - 1 );
   }
   else
   {
     ISSDEBUG(syslog( LOG_INFO, "Function %s: Unknown value type [%d] index [%d]\n" , __FUNCTION__, valueType, index );)
-    dest="";
+    dest[0] = '\0';
   }
 
   return (mi_integer)strlen( dest );
@@ -1185,6 +1196,9 @@ MI_CALLBACK_STATUS am_eot_cb (MI_EVENT_TYPE type, MI_CONNECTION *conn, void *ser
  * transaction iblock as the update will be listed before the insert.
  * As such we need to create a temporary linked list in the opposite order.
 */
+
+         int nMessages = 0;
+
          ENDXACT_PAYLOAD *current = NULL;
          ENDXACT_PAYLOAD *reverse = *endxact_payload;
          ENDXACT_PAYLOAD *nextptr = NULL;
@@ -1195,7 +1209,15 @@ MI_CALLBACK_STATUS am_eot_cb (MI_EVENT_TYPE type, MI_CONNECTION *conn, void *ser
             reverse->next = current;   // reverse pointer
             current = reverse;         // move current forward
             reverse = nextptr;         // move reverse forward
+
+            // Memory corruption protection
+            if (nMessages++ > 32000) {
+               ISSDEBUG(syslog( LOG_INFO, "Function %s: Reversing more than 32000 rows.\n"  , __FUNCTION__ );)
+               break;
+            }
          }
+
+         nMessages = 0;
 
          MqttPublish publish;
          memset( &publish , 0 , sizeof( MqttPublish ) );
@@ -1219,6 +1241,12 @@ MI_CALLBACK_STATUS am_eot_cb (MI_EVENT_TYPE type, MI_CONNECTION *conn, void *ser
               MqttClient_Publish( current->mqtt->client, &publish );
               ISSDEBUG(syslog( LOG_INFO, "Function %s: Published payload.\n"  , __FUNCTION__ );)
             }
+            if (nMessages++ > 32000) {
+               ISSDEBUG(syslog( LOG_INFO, "Function %s: Processing more than 32000 rows.\n"  , __FUNCTION__ );)
+               ISSDEBUG(syslog( LOG_INFO, "Function %s: Topic: %s.\n"  , __FUNCTION__, current->topic );)
+               break;
+            }
+
             current = current->next;
             ISSDEBUG(syslog( LOG_INFO, "Function %s: Next payload ptr: %p.\n"  , __FUNCTION__, current );)
          }
