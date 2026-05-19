@@ -1,3 +1,27 @@
+/******************************************************************************
+ * Informix Socket Stream (ISS)
+ * ---------------------------------------------------------------------------
+ * This module implements a custom Informix Access Method (AM) extension that:
+ *
+ *   1. Captures INSERT / UPDATE / DELETE operations
+ *   2. Converts rows to CSV
+ *   3. Buffers changes during a transaction
+ *   4. Publishes committed changes to MQTT
+ *
+ * Transaction integrity:
+ *   - Changes are NOT published immediately
+ *   - Messages are queued during the transaction
+ *   - MQTT publish occurs only after COMMIT
+ *   - ROLLBACK discards queued messages
+ *
+ * Main technologies:
+ *   - Informix DataBlade API
+ *   - Informix Access Method API
+ *   - MQTT client library
+ *   - Shared memory + transaction memory
+ *
+ ******************************************************************************/
+
 #include <mi.h>
 #include <miami.h>
 #include <minmprot.h>
@@ -17,16 +41,35 @@
 
 #include "mqttnet.h"
 
+/******************************************************************************
+ * Debug Logging
+ *
+ * WITH_ISS_DEBUG enables verbose syslog debugging.
+ ******************************************************************************/
 #ifdef WITH_ISS_DEBUG
   #define ISSDEBUG(x) x
 #else
   #define ISSDEBUG(x)
 #endif
 
+/******************************************************************************
+ * Parameter parsing delimiters for AM parameters.
+ *
+ * Example:
+ *   host=myhost port=1883 qos=1 topic=mytopic
+ ******************************************************************************/
 #define AMPARAM_TOKEN_DELIMITERS " =,"
+
+/******************************************************************************
+ * Named shared memory identifiers.
+ ******************************************************************************/
 #define INDEX_LIST_MEMNAME "ISSIndexList"
 #define PAYLOAD_LIST_MEMNAME "ISSPayloadList"
 #define EOT_CB_FLAG_MEMNAME "ISSEotCbFlag"
+
+/******************************************************************************
+ * MQTT protocol limits.
+ ******************************************************************************/
 #define MQTT_MAX_PACKET_ID 65535
 
 // Max index size depending of page size:
@@ -83,6 +126,19 @@ int nextMQTTClientID = 0;
 
 int *lastPacketID = NULL;
 
+/******************************************************************************
+ * safe_append
+ * ---------------------------------------------------------------------------
+ * Safely append src to dst with bounds checking.
+ *
+ * Guarantees:
+ *   - Never overflows destination buffer
+ *   - Always null-terminates
+ *
+ * Returns:
+ *   0  -> success
+ *  -1  -> truncation/error
+ ******************************************************************************/
 static int safe_append(char *dst, size_t dst_size, const char *src)
 {
     if (!dst || !src || dst_size == 0)
@@ -110,6 +166,23 @@ static int safe_append(char *dst, size_t dst_size, const char *src)
     return 0;
 }
 
+/******************************************************************************
+ * csv_escape_append
+ * ---------------------------------------------------------------------------
+ * Append a CSV-safe escaped field to destination buffer.
+ *
+ * CSV escaping rules:
+ *   - Entire field wrapped in quotes
+ *   - Internal quotes doubled
+ *
+ * Example:
+ *   hello      -> "hello"
+ *   a"b        -> "a""b"
+ *
+ * Returns:
+ *   0  -> success
+ *  -1  -> truncation/error
+ ******************************************************************************/
 static int csv_escape_append(char *dst, size_t dst_size, const char *src)
 {
     if (!dst || !src || dst_size == 0)
@@ -170,12 +243,24 @@ truncated:
     return -1;
 }
 
+/******************************************************************************
+ * xact_payload_new
+ * ---------------------------------------------------------------------------
+ * Create a transaction payload node.
+ *
+ * Memory lifetime:
+ *   PER_TRANSACTION
+ *
+ * Payloads automatically disappear after transaction completion.
+ ******************************************************************************/
 ENDXACT_PAYLOAD* xact_payload_new( char *payload , ISS_MQTTSettings *mqtt, char *topic)
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
   ISSDEBUG(syslog( LOG_INFO, "Function %s: payload is %s\n" , __FUNCTION__ , payload);)
 
   mi_integer topicLen = strlen( topic );
+
+  // Topic must be copied because original memory may outlive transaction.
   char *ownedTopic = (char*)mi_dalloc( topicLen + 1, PER_TRANSACTION );
 
   memcpy( ownedTopic, topic, topicLen );
@@ -192,6 +277,11 @@ ENDXACT_PAYLOAD* xact_payload_new( char *payload , ISS_MQTTSettings *mqtt, char 
 }
 
 
+/******************************************************************************
+ * xact_payload_add
+ * ---------------------------------------------------------------------------
+ * Push payload node to front of transaction queue.
+ ******************************************************************************/
 ENDXACT_PAYLOAD* xact_payload_add( ENDXACT_PAYLOAD *list, ENDXACT_PAYLOAD *link )
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
@@ -216,6 +306,11 @@ ENDXACT_PAYLOAD* xact_payload_add( ENDXACT_PAYLOAD *list, ENDXACT_PAYLOAD *link 
    return link;
 }
 
+/******************************************************************************
+ * mqttGetNextPacketID
+ * ---------------------------------------------------------------------------
+ * Thread-safe MQTT packet identifier generator.
+ ******************************************************************************/
 word16 mqttGetNextPacketID()
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
@@ -229,6 +324,12 @@ word16 mqttGetNextPacketID()
   return id;
 }
 
+/******************************************************************************
+ * ISS_LinkedList_remove
+ * ---------------------------------------------------------------------------
+ * Remove a node from singly linked list.
+ *
+ ******************************************************************************/
 ISS_LinkedList* ISS_LinkedList_remove( ISS_LinkedList *list, ISS_LinkedList *link )
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
@@ -255,6 +356,12 @@ ISS_LinkedList* ISS_LinkedList_remove( ISS_LinkedList *list, ISS_LinkedList *lin
   return list;
 }
 
+/******************************************************************************
+ * ISS_LinkedList_add
+ * ---------------------------------------------------------------------------
+ * Push node to front of linked list.
+ *
+ ******************************************************************************/
 ISS_LinkedList* ISS_LinkedList_add( ISS_LinkedList *list, ISS_LinkedList *link )
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
@@ -277,6 +384,12 @@ ISS_LinkedList* ISS_LinkedList_add( ISS_LinkedList *list, ISS_LinkedList *link )
   return link;
 }
 
+/******************************************************************************
+ * ISS_LinkedList_new
+ * ---------------------------------------------------------------------------
+ * Allocate a new linked list node.
+ *
+ ******************************************************************************/
 ISS_LinkedList* ISS_LinkedList_new( void *payload )
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
@@ -288,12 +401,26 @@ ISS_LinkedList* ISS_LinkedList_new( void *payload )
   return newLink;
 }
 
+/******************************************************************************
+ * getTableName
+ * ---------------------------------------------------------------------------
+ * Resolve an Informix index name into its owning table name.
+ *
+ * This helper queries Informix system catalogs:
+ *
+ *   sysindices
+ *   systables
+ *
+ * to determine which table owns a given index.
+ ******************************************************************************/
 mi_integer getTableName( mi_string *indexName, char *dest )
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
   ISSDEBUG(syslog( LOG_INFO, "Entering function %s\n" , __FUNCTION__ );)
 
   MI_CONNECTION *conn = mi_open( NULL, NULL, NULL );
+
+  // Failed to create internal database connection.
   if( !conn ) return MI_ERROR;
 
   mi_string queryString[256];
@@ -303,13 +430,17 @@ mi_integer getTableName( mi_string *indexName, char *dest )
     mi_close(conn);
     return MI_ERROR;
   }
-  if( mi_get_result( conn ) != MI_ROWS )
+
+  // Expecting a row-producing query.
+  if ( mi_get_result( conn ) != MI_ROWS )
   {
     mi_close(conn);
     return MI_ERROR;
   }
 
   mi_integer error = 0;
+
+  // Fetch first row.
   MI_ROW *row = mi_next_row( conn , &error );
   if( !row )
   {
@@ -325,15 +456,69 @@ mi_integer getTableName( mi_string *indexName, char *dest )
     return MI_ERROR;
   }
 
+  // Convert Informix LVARCHAR to C string.
   mi_string *tableName = mi_lvarchar_to_string( (mi_lvarchar*)valueBuffer );
   strcat( dest , tableName );
   mi_free( tableName );
 
+  // Close internal connection.
   mi_close(conn);
 
   return MI_OK;
 }
 
+/******************************************************************************
+ * getMQTTServerInfo
+ * ---------------------------------------------------------------------------
+ * Parse MQTT configuration parameters from an Informix Access Method
+ * table descriptor and build an ISS_ServerInfo structure.
+ *
+ * This function reads the AM parameter string associated with the table
+ * descriptor using:
+ *
+ *     mi_tab_amparam(tableDesc)
+ *
+ * Expected parameter format:
+ *
+ *     host=<hostname> port=<port> qos=<qos> topic=<topic>
+ *
+ * Example:
+ *
+ *     host=mqtt.example.com port=1883 qos=1 topic=mytable
+ *
+ * Supported parameters:
+ *
+ *   host
+ *       MQTT broker hostname or IP address.
+ *
+ *   port
+ *       MQTT broker TCP port.
+ *
+ *   qos
+ *       MQTT Quality-of-Service level.
+ *
+ *         0 = at most once
+ *         1 = at least once
+ *         2 = exactly once
+ *
+ *   topic
+ *       MQTT topic name used for publishing row changes.
+ *
+ * Required parameters:
+ *
+ *   - host
+ *   - port
+ *   - topic
+ *
+ * Returns:
+ *
+ *   ISS_ServerInfo*
+ *       Successfully parsed MQTT configuration.
+ *
+ *   NULL
+ *       Configuration invalid or allocation/parsing failure.
+ *
+ ******************************************************************************/
 ISS_ServerInfo* getMQTTServerInfo( MI_AM_TABLE_DESC *tableDesc )
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
@@ -431,6 +616,43 @@ ISS_ServerInfo* getMQTTServerInfo( MI_AM_TABLE_DESC *tableDesc )
   return info;
 }
 
+/******************************************************************************
+ * getMQTTSettings
+ * ---------------------------------------------------------------------------
+ * Locate or create MQTT client settings associated with a specific
+ * MQTT broker configuration.
+ *
+ * This function searches the global index registry for an existing
+ * MQTT client configuration matching:
+ *
+ *   - current process ID (pid)
+ *   - ISS_ServerInfo pointer
+ *
+ * Purpose:
+ *
+ *   MQTT connections are shared between indexes that publish to the
+ *   same broker within the same Informix process. This reduces:
+ *
+ *     - socket creation overhead
+ *     - MQTT reconnect frequency
+ *     - memory usage
+ *
+ * Parameters:
+ *
+ *   serverInfo
+ *       MQTT broker configuration previously created by
+ *       getMQTTServerInfo().
+ *
+ * Returns:
+ *
+ *   ISS_MQTTSettings*
+ *       Existing or newly allocated MQTT settings structure.
+ *
+ *   NULL
+ *       Allocation failure (currently unlikely because mi_dalloc()
+ *       generally raises exceptions internally).
+ *
+ ******************************************************************************/
 ISS_MQTTSettings* getMQTTSettings( ISS_ServerInfo *serverInfo )
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
@@ -465,6 +687,11 @@ ISS_MQTTSettings* getMQTTSettings( ISS_ServerInfo *serverInfo )
   return settings;
 }
 
+/******************************************************************************
+ * removeMQTTSettings
+ * ---------------------------------------------------------------------------
+ *
+ ******************************************************************************/
 void removeMQTTSettings( ISS_MQTTSettings *settings )
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
@@ -493,6 +720,11 @@ void removeMQTTSettings( ISS_MQTTSettings *settings )
     }
 }
 
+/******************************************************************************
+ * connectMQTTClient
+ * ---------------------------------------------------------------------------
+ *
+ ******************************************************************************/
 mi_integer connectMQTTClient( ISS_MQTTSettings *mqttSettings )
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
@@ -562,6 +794,11 @@ mi_integer connectMQTTClient( ISS_MQTTSettings *mqttSettings )
   return MI_OK;
 }
 
+/******************************************************************************
+ * getIndex
+ * ---------------------------------------------------------------------------
+ *
+ ******************************************************************************/
 ISS_Index* getIndex( MI_AM_TABLE_DESC *tableDesc )
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
@@ -637,6 +874,11 @@ ISS_Index* getIndex( MI_AM_TABLE_DESC *tableDesc )
   return index;
 }
 
+/******************************************************************************
+ * getMQTTClient
+ * ---------------------------------------------------------------------------
+ *
+ ******************************************************************************/
 ISS_MQTTSettings* getMQTTClient( ISS_Index *index )
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
@@ -667,6 +909,11 @@ ISS_MQTTSettings* getMQTTClient( ISS_Index *index )
   return settings;
 }
 
+/******************************************************************************
+ * removeIndex
+ * ---------------------------------------------------------------------------
+ *
+ ******************************************************************************/
 void removeIndex( mi_string *indexName )
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
@@ -731,6 +978,11 @@ void removeIndex( mi_string *indexName )
   mi_unlock_memory( INDEX_LIST_MEMNAME , PER_SYSTEM );
 }
 
+/******************************************************************************
+ * columnValueToString
+ * ---------------------------------------------------------------------------
+ *
+ ******************************************************************************/
 mi_integer columnValueToString( MI_ROW *row, mi_integer index, char *dest, mi_integer remaining )
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
@@ -845,6 +1097,11 @@ mi_integer columnValueToString( MI_ROW *row, mi_integer index, char *dest, mi_in
   return (mi_integer)strlen( dest );
 }
 
+/******************************************************************************
+ * rowToCSV
+ * ---------------------------------------------------------------------------
+ *
+ ******************************************************************************/
 void rowToCSV(MI_ROW *row, char *dest, mi_integer remaining)
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
@@ -912,6 +1169,33 @@ void rowToCSV( MI_ROW *row, char *dest, mi_integer remaining )
 }
 */
 
+/******************************************************************************
+ * ensureEotCallbackRegistered
+ * ---------------------------------------------------------------------------
+ * Ensures that the End-Of-Transaction (EOT) callback used by this Access
+ * Method is registered exactly once per database session/system instance.
+ *
+ * This callback is critical for deferred MQTT publishing, because it allows
+ * the module to:
+ *
+ *   - buffer row-level changes during a transaction
+ *   - detect COMMIT vs ROLLBACK
+ *   - publish MQTT messages only after successful COMMIT
+ *
+ * Callback registered:
+ *
+ *   am_eot_cb
+ *       Triggered on MI_EVENT_COMMIT_ABORT
+ *
+ * Returns:
+ *
+ *   MI_OK
+ *       Callback already registered or successfully registered.
+ *
+ *   MI_ERROR
+ *       Registration failed (mi_register_callback returned NULL).
+ *
+ ******************************************************************************/
 static mi_integer ensureEotCallbackRegistered()
 {
     if( *eot_cb_registered ) return MI_OK;
@@ -934,6 +1218,8 @@ static mi_integer ensureEotCallbackRegistered()
     *eot_cb_registered = 1;
     return MI_OK;
 }
+
+
 
 mi_integer am_create( MI_AM_TABLE_DESC *tableDesc )
 {
