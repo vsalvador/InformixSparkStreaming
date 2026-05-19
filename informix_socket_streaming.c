@@ -799,6 +799,129 @@ mi_integer connectMQTTClient( ISS_MQTTSettings *mqttSettings )
  * ---------------------------------------------------------------------------
  *
  ******************************************************************************/
+ISS_Index* getIndex(MI_AM_TABLE_DESC *tableDesc)
+{
+    ISSDEBUG(openlog("InformixSocketStream", 0, LOG_USER);)
+    ISSDEBUG(syslog(LOG_INFO, "Entering function %s\n", __FUNCTION__);)
+
+    if (indexList == NULL || tableDesc == NULL)
+        return NULL;
+
+    /* ----------------------------
+     * LOCK GLOBAL INDEX STRUCTURE
+     * ---------------------------- */
+    if (mi_lock_memory(INDEX_LIST_MEMNAME, PER_SYSTEM) != MI_OK)
+        return NULL;
+
+    mi_string *indexName = mi_tab_name(tableDesc);
+    ISS_Index *index = NULL;
+
+    /* ----------------------------
+     * 1. FIND EXISTING INDEX
+     * ---------------------------- */
+    for (ISS_LinkedList *cur = *indexList; cur != NULL; cur = cur->next)
+    {
+        ISS_Index *idx = (ISS_Index*)cur->payload;
+
+        if (strcmp(idx->indexName, indexName) == 0)
+        {
+            index = idx;
+            break;
+        }
+    }
+
+    if (index != NULL)
+    {
+        mi_free(indexName);
+        mi_unlock_memory(INDEX_LIST_MEMNAME, PER_SYSTEM);
+        return index;
+    }
+
+    /* ----------------------------
+     * 2. CREATE OR REUSE SERVER INFO
+     * ---------------------------- */
+    ISS_ServerInfo *newInfo = getMQTTServerInfo(tableDesc);
+    if (newInfo == NULL)
+    {
+        mi_free(indexName);
+        mi_unlock_memory(INDEX_LIST_MEMNAME, PER_SYSTEM);
+        return NULL;
+    }
+
+    ISS_ServerInfo *sharedInfo = NULL;
+
+    for (ISS_LinkedList *cur = *indexList; cur != NULL; cur = cur->next)
+    {
+        ISS_Index *idx = (ISS_Index*)cur->payload;
+
+        if (idx->serverInfo == NULL)
+            continue;
+
+        if (strcmp(idx->serverInfo->host, newInfo->host) == 0 &&
+            idx->serverInfo->port == newInfo->port &&
+            strcmp(idx->serverInfo->topic ? idx->serverInfo->topic : "",
+                   newInfo->topic ? newInfo->topic : "") == 0)
+        {
+            sharedInfo = idx->serverInfo;
+            break;
+        }
+    }
+
+    /* ----------------------------
+     * 3. OWNERSHIP DECISION
+     * ---------------------------- */
+    if (sharedInfo != NULL)
+    {
+        /* reuse existing server info */
+        mi_free(newInfo->host);
+        mi_free(newInfo->topic);
+        mi_free(newInfo);
+
+        newInfo = sharedInfo;
+    }
+    else
+    {
+        /* first owner of this server info */
+        newInfo->refCount = 0;
+    }
+
+    /* one index holds a reference */
+    newInfo->refCount++;
+
+    /* ----------------------------
+     * 4. CREATE INDEX
+     * ---------------------------- */
+    index = (ISS_Index*)mi_dalloc(sizeof(ISS_Index), PER_SYSTEM);
+
+    size_t nameLen = strlen(indexName);
+
+    index->indexName = (char*)mi_dalloc(nameLen + 1, PER_SYSTEM);
+    memcpy(index->indexName, indexName, nameLen);
+    index->indexName[nameLen] = '\0';
+
+    index->mqttTopic = (char*)mi_dalloc(256, PER_SYSTEM);
+    memset(index->mqttTopic, 0, 256);
+
+    index->serverInfo = newInfo;
+    index->mqttList = NULL;
+
+    /* resolve topic from table */
+    getTableName(indexName, index->mqttTopic);
+
+    /* ----------------------------
+     * 5. INSERT INTO GLOBAL LIST
+     * ---------------------------- */
+    *indexList = ISS_LinkedList_add(*indexList, ISS_LinkedList_new(index));
+
+    ISSDEBUG(syslog(LOG_INFO, "Function %s: Added index %s\n", __FUNCTION__, indexName);)
+
+    mi_free(indexName);
+    mi_unlock_memory(INDEX_LIST_MEMNAME, PER_SYSTEM);
+
+    return index;
+}
+
+/*******
 ISS_Index* getIndex( MI_AM_TABLE_DESC *tableDesc )
 {
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
@@ -815,8 +938,6 @@ ISS_Index* getIndex( MI_AM_TABLE_DESC *tableDesc )
   ISS_LinkedList *current = *indexList;
   ISS_Index *index = NULL;
 
-  ISSDEBUG(syslog( LOG_INFO, "Function %s: check 1.\n" , __FUNCTION__ );)
-  ISSDEBUG(syslog( LOG_INFO, "Function %s: Index name is %s.\n" , __FUNCTION__ , indexName );)
   while( current != NULL )
   {
     index = (ISS_Index*)current->payload;
@@ -825,32 +946,35 @@ ISS_Index* getIndex( MI_AM_TABLE_DESC *tableDesc )
     current = current->next;
   }
 
-  ISSDEBUG(syslog( LOG_INFO, "Function %s: check 2.\n" , __FUNCTION__ );)
-  if( index == NULL )
+  if ( index == NULL )
   {
     ISS_ServerInfo *serverInfo = getMQTTServerInfo( tableDesc );
-    if( serverInfo == NULL ) return NULL;
+    if ( serverInfo == NULL ) {
+      mi_free(indexName);
+      return NULL;
+    }
+
+    ISS_ServerInfo *existing = NULL;
 
     current = *indexList;
     while( current != NULL )
     {
-      index = (ISS_Index*)current->payload;
-      if( strcmp( index->serverInfo->host , serverInfo->host ) == 0 && 
-          index->serverInfo->port == serverInfo->port && 
-          strcmp( index->serverInfo->topic ? index->serverInfo->topic : "" , serverInfo->topic ? serverInfo->topic : "" ) == 0 )
+      ISS_Index *idx = (ISS_Index*)current->payload;
+
+      if( strcmp( idx->serverInfo->host , serverInfo->host ) == 0 && 
+          idx->serverInfo->port == serverInfo->port && 
+          strcmp( idx->serverInfo->topic ? idx->serverInfo->topic : "" , serverInfo->topic ? serverInfo->topic : "" ) == 0 )
       {
-        ISSDEBUG(syslog( LOG_INFO, "Function %s: index->serverInfo->topic is %s\n" , __FUNCTION__ , index->serverInfo->topic );)
-        ISSDEBUG(syslog( LOG_INFO, "Function %s: serverInfo->topic is %s\n" , __FUNCTION__ , serverInfo->topic );)
-
-
-        mi_free( serverInfo->host );
-        mi_free( serverInfo->topic );
-        mi_free( serverInfo );
-
-        serverInfo = index->serverInfo;
+        existing = idx->serverInfo;
         break;
       }
+
       current = current->next;
+    }
+    if (existing)
+    {
+      existing->refCount++;
+      serverInfo = existing;
     }
 
     int indexNameLen = strlen( indexName );
@@ -873,6 +997,7 @@ ISS_Index* getIndex( MI_AM_TABLE_DESC *tableDesc )
 
   return index;
 }
+*******/
 
 /******************************************************************************
  * getMQTTClient
@@ -919,7 +1044,8 @@ void removeIndex( mi_string *indexName )
   ISSDEBUG(openlog( "InformixSocketStream" , 0, LOG_USER );)
   ISSDEBUG(syslog( LOG_INFO, "Entering function %s\n" , __FUNCTION__ );)
 
-  if( indexList == NULL ) return;
+  if (indexList == NULL || indexName == NULL)
+      return;
 
   mi_lock_memory( INDEX_LIST_MEMNAME , PER_SYSTEM );
 
