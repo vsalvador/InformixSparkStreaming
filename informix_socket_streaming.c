@@ -196,6 +196,12 @@ static int csv_escape_append(char *dst, size_t dst_size, const char *src)
     char *p = dst + dst_len;
     size_t remaining = dst_size - dst_len;
 
+    // rtrim: find end excluding trailing whitespace
+    const char *end = src + strlen(src);
+
+    while (end > src && isspace((unsigned char)*(end - 1)))
+        end--;
+
     // opening quote
     if (remaining <= 1)
         goto truncated;
@@ -203,7 +209,7 @@ static int csv_escape_append(char *dst, size_t dst_size, const char *src)
     *p++ = '"';
     remaining--;
 
-    while (*src)
+    while (src < end)
     {
         if (*src == '"')
         {
