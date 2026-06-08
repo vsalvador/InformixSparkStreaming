@@ -301,3 +301,16 @@ Because the extension processes row changes synchronously and formats messages f
 * Break large operations into **smaller batches**
 * Create the index **before loading data**, when possible
 
+---
+
+## Current implementation issues
+
+### Transaction Isolation
+The current implementation stores pending database changes for all active transactions in a single in-memory queue.
+
+To preserve transactional consistency, changes are not published immediately. Instead, they remain in memory until a COMMIT WORK event is received. However, because all pending operations share the same queue, the receipt of a commit event causes the entire queue to be flushed to the MQTT broker.
+
+As a result, messages belonging to other active transactions may be published before those transactions have been explicitly committed. This behavior violates transaction isolation and may expose consumers to uncommitted data.
+
+### Using datablade in tables replicated from ER replicatesets
+There is a known issue if you try to use this indexes in tables receiving data from Enterprise Replication Replicates: assert fails can occur and replication can be frozend until engine is restarted.
